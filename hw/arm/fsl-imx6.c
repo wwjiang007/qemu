@@ -37,13 +37,7 @@ static void fsl_imx6_init(Object *obj)
     char name[NAME_SIZE];
     int i;
 
-    if (smp_cpus > FSL_IMX6_NUM_CPUS) {
-        error_report("%s: Only %d CPUs are supported (%d requested)",
-                     TYPE_FSL_IMX6, FSL_IMX6_NUM_CPUS, smp_cpus);
-        exit(1);
-    }
-
-    for (i = 0; i < smp_cpus; i++) {
+    for (i = 0; i < MIN(smp_cpus, FSL_IMX6_NUM_CPUS); i++) {
         object_initialize(&s->cpu[i], sizeof(s->cpu[i]),
                           "cortex-a9-" TYPE_ARM_CPU);
         snprintf(name, NAME_SIZE, "cpu%d", i);
@@ -119,6 +113,12 @@ static void fsl_imx6_realize(DeviceState *dev, Error **errp)
     uint16_t i;
     Error *err = NULL;
 
+    if (smp_cpus > FSL_IMX6_NUM_CPUS) {
+        error_setg(errp, "%s: Only %d CPUs are supported (%d requested)",
+                   TYPE_FSL_IMX6, FSL_IMX6_NUM_CPUS, smp_cpus);
+        return;
+    }
+
     for (i = 0; i < smp_cpus; i++) {
 
         /* On uniprocessor, the CBAR is set to 0 */
@@ -188,20 +188,7 @@ static void fsl_imx6_realize(DeviceState *dev, Error **errp)
             { FSL_IMX6_UART5_ADDR, FSL_IMX6_UART5_IRQ },
         };
 
-        if (i < MAX_SERIAL_PORTS) {
-            Chardev *chr;
-
-            chr = serial_hds[i];
-
-            if (!chr) {
-                char *label = g_strdup_printf("imx6.uart%d", i + 1);
-                chr = qemu_chr_new(label, "null");
-                g_free(label);
-                serial_hds[i] = chr;
-            }
-
-            qdev_prop_set_chr(DEVICE(&s->uart[i]), "chardev", chr);
-        }
+        qdev_prop_set_chr(DEVICE(&s->uart[i]), "chardev", serial_hd(i));
 
         object_property_set_bool(OBJECT(&s->uart[i]), true, "realized", &err);
         if (err) {
@@ -449,7 +436,7 @@ static void fsl_imx6_class_init(ObjectClass *oc, void *data)
 
     dc->realize = fsl_imx6_realize;
     dc->desc = "i.MX6 SOC";
-    /* Reason: Uses serial_hds[] in the realize() function */
+    /* Reason: Uses serial_hd() in the realize() function */
     dc->user_creatable = false;
 }
 

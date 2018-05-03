@@ -67,6 +67,7 @@
    IRQ12 = SM502_INT
 */
 
+#define CPU_FREQ 1150000000
 #define SDRAM_NR_BANKS 4
 
 /* FIXME: See u-boot.git 8ac41e, also fix in ppc440_uc.c */
@@ -253,8 +254,8 @@ static int sam460ex_load_device_tree(hwaddr addr,
     char *filename;
     int fdt_size;
     void *fdt;
-    uint32_t tb_freq = 50000000;
-    uint32_t clock_freq = 50000000;
+    uint32_t tb_freq = CPU_FREQ;
+    uint32_t clock_freq = CPU_FREQ;
 
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, BINARY_DEVICE_TREE_FILE);
     if (!filename) {
@@ -416,7 +417,7 @@ static void sam460ex_init(MachineState *machine)
     boot_info = g_malloc0(sizeof(*boot_info));
     env->load_info = boot_info;
 
-    ppc_booke_timers_init(cpu, 50000000, 0);
+    ppc_booke_timers_init(cpu, CPU_FREQ, 0);
     ppc_dcr_init(env, NULL, NULL);
 
     /* PLB arbitrer */
@@ -521,14 +522,14 @@ static void sam460ex_init(MachineState *machine)
 
     /* SoC has 4 UARTs
      * but board has only one wired and two are present in fdt */
-    if (serial_hds[0] != NULL) {
+    if (serial_hd(0) != NULL) {
         serial_mm_init(address_space_mem, 0x4ef600300, 0, uic[1][1],
-                       PPC_SERIAL_MM_BAUDBASE, serial_hds[0],
+                       PPC_SERIAL_MM_BAUDBASE, serial_hd(0),
                        DEVICE_BIG_ENDIAN);
     }
-    if (serial_hds[1] != NULL) {
+    if (serial_hd(1) != NULL) {
         serial_mm_init(address_space_mem, 0x4ef600400, 0, uic[0][1],
-                       PPC_SERIAL_MM_BAUDBASE, serial_hds[1],
+                       PPC_SERIAL_MM_BAUDBASE, serial_hd(1),
                        DEVICE_BIG_ENDIAN);
     }
 

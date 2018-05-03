@@ -60,6 +60,11 @@ do_compiler() {
     # is compiler binary to execute.
     local compiler="$1"
     shift
+    if test -n "$BASH_VERSION"; then eval '
+        echo >>config.log "
+funcs: ${FUNCNAME[*]}
+lines: ${BASH_LINENO[*]}"
+    '; fi
     echo $compiler "$@" >> config.log
     $compiler "$@" >> config.log 2>&1 || return $?
     # Test passed. If this is an --enable-werror build, rerun
@@ -1497,16 +1502,19 @@ Advanced options (experts only):
   --install=INSTALL        use specified install [$install]
   --python=PYTHON          use specified python [$python]
   --smbd=SMBD              use specified smbd [$smbd]
+  --with-git=GIT           use specified git [$git]
   --static                 enable static build [$static]
   --mandir=PATH            install man pages in PATH
   --datadir=PATH           install firmware in PATH$confsuffix
   --docdir=PATH            install documentation in PATH$confsuffix
   --bindir=PATH            install binaries in PATH
   --libdir=PATH            install libraries in PATH
+  --libexecdir=PATH        install helper binaries in PATH
   --sysconfdir=PATH        install config in PATH$confsuffix
   --localstatedir=PATH     install local state in PATH (set at runtime on win32)
   --firmwarepath=PATH      search PATH for firmware files
   --with-confsuffix=SUFFIX suffix for QEMU data inside datadir/libdir/sysconfdir [$confsuffix]
+  --with-pkgversion=VERS   use specified string as sub-version of the package
   --enable-debug           enable common debug build options
   --enable-sanitizers      enable default sanitizers
   --disable-strip          disable stripping binaries
@@ -2186,6 +2194,9 @@ if test "$xen" != "no" ; then
     xen=yes
     xen_pc="xencontrol xenstore xenguest xenforeignmemory xengnttab"
     xen_pc="$xen_pc xenevtchn xendevicemodel"
+    if $pkg_config --exists xentoolcore; then
+      xen_pc="$xen_pc xentoolcore"
+    fi
     QEMU_CFLAGS="$QEMU_CFLAGS $($pkg_config --cflags $xen_pc)"
     libs_softmmu="$($pkg_config --libs $xen_pc) $libs_softmmu"
     LDFLAGS="$($pkg_config --libs $xen_pc) $LDFLAGS"
@@ -2215,20 +2226,41 @@ EOF
     # Xen unstable
     elif
         cat > $TMPC <<EOF &&
+#undef XC_WANT_COMPAT_DEVICEMODEL_API
+#define __XEN_TOOLS__
+#include <xendevicemodel.h>
+int main(void) {
+  xendevicemodel_handle *xd;
+
+  xd = xendevicemodel_open(0, 0);
+  xendevicemodel_pin_memory_cacheattr(xd, 0, 0, 0, 0);
+
+  return 0;
+}
+EOF
+        compile_prog "" "$xen_libs -lxendevicemodel $xen_stable_libs -lxentoolcore"
+      then
+      xen_stable_libs="-lxendevicemodel $xen_stable_libs -lxentoolcore"
+      xen_ctrl_version=41100
+      xen=yes
+    elif
+        cat > $TMPC <<EOF &&
 #undef XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenforeignmemory.h>
+#include <xentoolcore.h>
 int main(void) {
   xenforeignmemory_handle *xfmem;
 
   xfmem = xenforeignmemory_open(0, 0);
   xenforeignmemory_map2(xfmem, 0, 0, 0, 0, 0, 0, 0);
+  xentoolcore_restrict_all(0);
 
   return 0;
 }
 EOF
-        compile_prog "" "$xen_libs -lxendevicemodel $xen_stable_libs"
+        compile_prog "" "$xen_libs -lxendevicemodel $xen_stable_libs -lxentoolcore"
       then
-      xen_stable_libs="-lxendevicemodel $xen_stable_libs"
+      xen_stable_libs="-lxendevicemodel $xen_stable_libs -lxentoolcore"
       xen_ctrl_version=41000
       xen=yes
     elif
@@ -2537,19 +2569,18 @@ fi
 ##########################################
 # GTK probe
 
-if test "$gtkabi" = ""; then
-    # The GTK ABI was not specified explicitly, so try whether 3.0 is available.
-    # Use 2.0 as a fallback if that is available.
-    if $pkg_config --exists "gtk+-3.0 >= 3.0.0"; then
-        gtkabi=3.0
-    elif $pkg_config --exists "gtk+-2.0 >= 2.18.0"; then
-        gtkabi=2.0
-    else
-        gtkabi=3.0
-    fi
-fi
-
 if test "$gtk" != "no"; then
+    if test "$gtkabi" = ""; then
+        # The GTK ABI was not specified explicitly, so try whether 3.0 is available.
+        # Use 2.0 as a fallback if that is available.
+        if $pkg_config --exists "gtk+-3.0 >= 3.0.0"; then
+            gtkabi=3.0
+        elif $pkg_config --exists "gtk+-2.0 >= 2.18.0"; then
+            gtkabi=2.0
+        else
+            gtkabi=3.0
+        fi
+    fi
     gtkpackage="gtk+-$gtkabi"
     gtkx11package="gtk+-x11-$gtkabi"
     if test "$gtkabi" = "3.0" ; then
@@ -2833,49 +2864,52 @@ fi
 # Look for sdl configuration program (pkg-config or sdl-config).  Try
 # sdl-config even without cross prefix, and favour pkg-config over sdl-config.
 
-if test "$sdlabi" = ""; then
-    if $pkg_config --exists "sdl2"; then
-        sdlabi=2.0
-    elif $pkg_config --exists "sdl"; then
-        sdlabi=1.2
-    else
-        sdlabi=2.0
-    fi
-fi
-
-if test $sdlabi = "2.0"; then
-    sdl_config=$sdl2_config
-    sdlname=sdl2
-    sdlconfigname=sdl2_config
-elif test $sdlabi = "1.2"; then
-    sdlname=sdl
-    sdlconfigname=sdl_config
-else
-    error_exit "Unknown sdlabi $sdlabi, must be 1.2 or 2.0"
-fi
-
-if test "$(basename $sdl_config)" != $sdlconfigname && ! has ${sdl_config}; then
-  sdl_config=$sdlconfigname
-fi
-
-if $pkg_config $sdlname --exists; then
-  sdlconfig="$pkg_config $sdlname"
-  sdlversion=$($sdlconfig --modversion 2>/dev/null)
-elif has ${sdl_config}; then
-  sdlconfig="$sdl_config"
-  sdlversion=$($sdlconfig --version)
-else
-  if test "$sdl" = "yes" ; then
-    feature_not_found "sdl" "Install SDL2-devel"
+sdl_probe ()
+{
+  sdl_too_old=no
+  if test "$sdlabi" = ""; then
+      if $pkg_config --exists "sdl2"; then
+          sdlabi=2.0
+      elif $pkg_config --exists "sdl"; then
+          sdlabi=1.2
+      else
+          sdlabi=2.0
+      fi
   fi
-  sdl=no
-fi
-if test -n "$cross_prefix" && test "$(basename "$sdlconfig")" = sdl-config; then
-  echo warning: using "\"$sdlconfig\"" to detect cross-compiled sdl >&2
-fi
 
-sdl_too_old=no
-if test "$sdl" != "no" ; then
+  if test $sdlabi = "2.0"; then
+      sdl_config=$sdl2_config
+      sdlname=sdl2
+      sdlconfigname=sdl2_config
+  elif test $sdlabi = "1.2"; then
+      sdlname=sdl
+      sdlconfigname=sdl_config
+  else
+      error_exit "Unknown sdlabi $sdlabi, must be 1.2 or 2.0"
+  fi
+
+  if test "$(basename $sdl_config)" != $sdlconfigname && ! has ${sdl_config}; then
+    sdl_config=$sdlconfigname
+  fi
+
+  if $pkg_config $sdlname --exists; then
+    sdlconfig="$pkg_config $sdlname"
+    sdlversion=$($sdlconfig --modversion 2>/dev/null)
+  elif has ${sdl_config}; then
+    sdlconfig="$sdl_config"
+    sdlversion=$($sdlconfig --version)
+  else
+    if test "$sdl" = "yes" ; then
+      feature_not_found "sdl" "Install SDL2-devel"
+    fi
+    sdl=no
+    # no need to do the rest
+    return
+  fi
+  if test -n "$cross_prefix" && test "$(basename "$sdlconfig")" = sdl-config; then
+    echo warning: using "\"$sdlconfig\"" to detect cross-compiled sdl >&2
+  fi
+
   cat > $TMPC << EOF
 #include <SDL.h>
 #undef main /* We don't want SDL to override our main() */
@@ -2917,6 +2951,10 @@ EOF
     fi
     sdl=no
   fi # sdl compile test
+}
+
+if test "$sdl" != "no" ; then
+  sdl_probe
 fi
 
 if test "$sdl" = "yes" ; then
@@ -4440,7 +4478,7 @@ fi
 
 # check for smartcard support
 if test "$smartcard" != "no"; then
-    if $pkg_config libcacard; then
+    if $pkg_config --atleast-version=2.5.1 libcacard; then
         libcacard_cflags=$($pkg_config --cflags libcacard)
         libcacard_libs=$($pkg_config --libs libcacard)
         smartcard="yes"
@@ -5054,6 +5092,14 @@ static S2 c2;
 static S4 c4;
 static S8 c8;
 static int i;
+void helper(void *d, void *a, int shift, int i);
+void helper(void *d, void *a, int shift, int i)
+{
+  *(U1 *)(d + i) = *(U1 *)(a + i) << shift;
+  *(U2 *)(d + i) = *(U2 *)(a + i) << shift;
+  *(U4 *)(d + i) = *(U4 *)(a + i) << shift;
+  *(U8 *)(d + i) = *(U8 *)(a + i) << shift;
+}
 int main(void)
 {
   a1 += b1; a2 += b2; a4 += b4; a8 += b8;
