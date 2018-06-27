@@ -18,7 +18,6 @@
  */
 #include "qemu/osdep.h"
 #include "qemu.h"
-#include "target_signal.h"
 #include "signal-common.h"
 #include "linux-user/trace.h"
 
@@ -133,9 +132,7 @@ static abi_ulong get_sigframe(struct target_sigaction *ka,
 {
     abi_ulong sp = env->regs[1];
 
-    if ((ka->sa_flags & TARGET_SA_ONSTACK) != 0 && !on_sig_stack(sp)) {
-        sp = target_sigaltstack_used.ss_sp + target_sigaltstack_used.ss_size;
-    }
+    sp = target_sigsp(sp, ka);
 
     return ((sp - frame_size) & -8UL);
 }

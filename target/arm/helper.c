@@ -41,6 +41,7 @@ static bool get_phys_addr_lpae(CPUARMState *env, target_ulong address,
 
 /* Security attributes for an address, as returned by v8m_security_lookup. */
 typedef struct V8M_SAttributes {
+    bool subpage; /* true if these attrs don't cover the whole TARGET_PAGE */
     bool ns;
     bool nsc;
     uint8_t sregion;
@@ -213,6 +214,29 @@ static void write_raw_cp_reg(CPUARMState *env, const ARMCPRegInfo *ri,
     } else {
         raw_write(env, ri, v);
     }
+}
+
+static int arm_gdb_get_sysreg(CPUARMState *env, uint8_t *buf, int reg)
+{
+    ARMCPU *cpu = arm_env_get_cpu(env);
+    const ARMCPRegInfo *ri;
+    uint32_t key;
+
+    key = cpu->dyn_xml.cpregs_keys[reg];
+    ri = get_arm_cp_reginfo(cpu->cp_regs, key);
+    if (ri) {
+        if (cpreg_field_is_64bit(ri)) {
+            return gdb_get_reg64(buf, (uint64_t)read_raw_cp_reg(env, ri));
+        } else {
+            return gdb_get_reg32(buf, (uint32_t)read_raw_cp_reg(env, ri));
+        }
+    }
+    return 0;
+}
+
+static int arm_gdb_set_sysreg(CPUARMState *env, uint8_t *buf, int reg)
+{
+    return 0;
 }
 
 static bool raw_accessors_invalid(const ARMCPRegInfo *ri)
@@ -690,12 +714,12 @@ static const ARMCPRegInfo cp_reginfo[] = {
      * the secure register to be properly reset and migrated. There is also no
      * v8 EL1 version of the register so the non-secure instance stands alone.
      */
-    { .name = "FCSEIDR(NS)",
+    { .name = "FCSEIDR",
       .cp = 15, .opc1 = 0, .crn = 13, .crm = 0, .opc2 = 0,
       .access = PL1_RW, .secure = ARM_CP_SECSTATE_NS,
       .fieldoffset = offsetof(CPUARMState, cp15.fcseidr_ns),
       .resetvalue = 0, .writefn = fcse_write, .raw_writefn = raw_write, },
-    { .name = "FCSEIDR(S)",
+    { .name = "FCSEIDR_S",
       .cp = 15, .opc1 = 0, .crn = 13, .crm = 0, .opc2 = 0,
       .access = PL1_RW, .secure = ARM_CP_SECSTATE_S,
       .fieldoffset = offsetof(CPUARMState, cp15.fcseidr_s),
@@ -711,7 +735,7 @@ static const ARMCPRegInfo cp_reginfo[] = {
       .access = PL1_RW, .secure = ARM_CP_SECSTATE_NS,
       .fieldoffset = offsetof(CPUARMState, cp15.contextidr_el[1]),
       .resetvalue = 0, .writefn = contextidr_write, .raw_writefn = raw_write, },
-    { .name = "CONTEXTIDR(S)", .state = ARM_CP_STATE_AA32,
+    { .name = "CONTEXTIDR_S", .state = ARM_CP_STATE_AA32,
       .cp = 15, .opc1 = 0, .crn = 13, .crm = 0, .opc2 = 1,
       .access = PL1_RW, .secure = ARM_CP_SECSTATE_S,
       .fieldoffset = offsetof(CPUARMState, cp15.contextidr_s),
@@ -840,6 +864,14 @@ static void cpacr_write(CPUARMState *env, const ARMCPRegInfo *ri,
     env->cp15.cpacr_el1 = value;
 }
 
+static void cpacr_reset(CPUARMState *env, const ARMCPRegInfo *ri)
+{
+    /* Call cpacr_write() so that we reset with the correct RAO bits set
+     * for our CPU features.
+     */
+    cpacr_write(env, ri, 0);
+}
+
 static CPAccessResult cpacr_access(CPUARMState *env, const ARMCPRegInfo *ri,
                                    bool isread)
 {
@@ -897,7 +929,7 @@ static const ARMCPRegInfo v6_cp_reginfo[] = {
     { .name = "CPACR", .state = ARM_CP_STATE_BOTH, .opc0 = 3,
       .crn = 1, .crm = 0, .opc1 = 0, .opc2 = 2, .accessfn = cpacr_access,
       .access = PL1_RW, .fieldoffset = offsetof(CPUARMState, cp15.cpacr_el1),
-      .resetvalue = 0, .writefn = cpacr_write },
+      .resetfn = cpacr_reset, .writefn = cpacr_write },
     REGINFO_SENTINEL
 };
 
@@ -1981,7 +2013,7 @@ static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
                                    cp15.c14_timer[GTIMER_PHYS].ctl),
       .writefn = gt_phys_ctl_write, .raw_writefn = raw_write,
     },
-    { .name = "CNTP_CTL(S)",
+    { .name = "CNTP_CTL_S",
       .cp = 15, .crn = 14, .crm = 2, .opc1 = 0, .opc2 = 1,
       .secure = ARM_CP_SECSTATE_S,
       .type = ARM_CP_IO | ARM_CP_ALIAS, .access = PL1_RW | PL0_R,
@@ -2020,7 +2052,7 @@ static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
       .accessfn = gt_ptimer_access,
       .readfn = gt_phys_tval_read, .writefn = gt_phys_tval_write,
     },
-    { .name = "CNTP_TVAL(S)",
+    { .name = "CNTP_TVAL_S",
       .cp = 15, .crn = 14, .crm = 2, .opc1 = 0, .opc2 = 0,
       .secure = ARM_CP_SECSTATE_S,
       .type = ARM_CP_NO_RAW | ARM_CP_IO, .access = PL1_RW | PL0_R,
@@ -2074,7 +2106,7 @@ static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
       .accessfn = gt_ptimer_access,
       .writefn = gt_phys_cval_write, .raw_writefn = raw_write,
     },
-    { .name = "CNTP_CVAL(S)", .cp = 15, .crm = 14, .opc1 = 2,
+    { .name = "CNTP_CVAL_S", .cp = 15, .crm = 14, .opc1 = 2,
       .secure = ARM_CP_SECSTATE_S,
       .access = PL1_RW | PL0_R,
       .type = ARM_CP_64BIT | ARM_CP_IO | ARM_CP_ALIAS,
@@ -4539,7 +4571,7 @@ void hw_breakpoint_update(ARMCPU *cpu, int n)
     case 4: /* unlinked address mismatch (reserved if AArch64) */
     case 5: /* linked address mismatch (reserved if AArch64) */
         qemu_log_mask(LOG_UNIMP,
-                      "arm: address mismatch breakpoint types not implemented");
+                      "arm: address mismatch breakpoint types not implemented\n");
         return;
     case 0: /* unlinked address match */
     case 1: /* linked address match */
@@ -4573,7 +4605,7 @@ void hw_breakpoint_update(ARMCPU *cpu, int n)
     case 8: /* unlinked VMID match (reserved if no EL2) */
     case 10: /* unlinked context ID and VMID match (reserved if no EL2) */
         qemu_log_mask(LOG_UNIMP,
-                      "arm: unlinked context breakpoint types not implemented");
+                      "arm: unlinked context breakpoint types not implemented\n");
         return;
     case 9: /* linked VMID match (reserved if no EL2) */
     case 11: /* linked context ID and VMID match (reserved if no EL2) */
@@ -5347,7 +5379,7 @@ void register_cp_regs_for_features(ARMCPU *cpu)
             for (r = id_cp_reginfo; r->type != ARM_CP_SENTINEL; r++) {
                 r->access = PL1_RW;
             }
-            id_tlbtr_reginfo.access = PL1_RW;
+            id_mpuir_reginfo.access = PL1_RW;
             id_tlbtr_reginfo.access = PL1_RW;
         }
         if (arm_feature(env, ARM_FEATURE_V8)) {
@@ -5488,6 +5520,9 @@ void arm_cpu_register_gdb_regs_for_features(ARMCPU *cpu)
         gdb_register_coprocessor(cs, vfp_gdb_get_reg, vfp_gdb_set_reg,
                                  19, "arm-vfp.xml", 0);
     }
+    gdb_register_coprocessor(cs, arm_gdb_get_sysreg, arm_gdb_set_sysreg,
+                             arm_gen_dynamic_xml(cs),
+                             "system-registers.xml", 0);
 }
 
 /* Sort alphabetically by type name, except for "any". */
@@ -5577,7 +5612,8 @@ CpuDefinitionInfoList *arch_query_cpu_definitions(Error **errp)
 
 static void add_cpreg_to_hashtable(ARMCPU *cpu, const ARMCPRegInfo *r,
                                    void *opaque, int state, int secstate,
-                                   int crm, int opc1, int opc2)
+                                   int crm, int opc1, int opc2,
+                                   const char *name)
 {
     /* Private utility function for define_one_arm_cp_reg_with_opaque():
      * add a single reginfo struct to the hash table.
@@ -5587,6 +5623,7 @@ static void add_cpreg_to_hashtable(ARMCPU *cpu, const ARMCPRegInfo *r,
     int is64 = (r->type & ARM_CP_64BIT) ? 1 : 0;
     int ns = (secstate & ARM_CP_SECSTATE_NS) ? 1 : 0;
 
+    r2->name = g_strdup(name);
     /* Reset the secure state to the specific incoming state.  This is
      * necessary as the register may have been defined with both states.
      */
@@ -5678,7 +5715,7 @@ static void add_cpreg_to_hashtable(ARMCPU *cpu, const ARMCPRegInfo *r,
     if (((r->crm == CP_ANY) && crm != 0) ||
         ((r->opc1 == CP_ANY) && opc1 != 0) ||
         ((r->opc2 == CP_ANY) && opc2 != 0)) {
-        r2->type |= ARM_CP_ALIAS;
+        r2->type |= ARM_CP_ALIAS | ARM_CP_NO_GDB;
     }
 
     /* Check that raw accesses are either forbidden or handled. Note that
@@ -5818,19 +5855,24 @@ void define_one_arm_cp_reg_with_opaque(ARMCPU *cpu,
                         /* Under AArch32 CP registers can be common
                          * (same for secure and non-secure world) or banked.
                          */
+                        char *name;
+
                         switch (r->secure) {
                         case ARM_CP_SECSTATE_S:
                         case ARM_CP_SECSTATE_NS:
                             add_cpreg_to_hashtable(cpu, r, opaque, state,
-                                                   r->secure, crm, opc1, opc2);
+                                                   r->secure, crm, opc1, opc2,
+                                                   r->name);
                             break;
                         default:
+                            name = g_strdup_printf("%s_S", r->name);
                             add_cpreg_to_hashtable(cpu, r, opaque, state,
                                                    ARM_CP_SECSTATE_S,
-                                                   crm, opc1, opc2);
+                                                   crm, opc1, opc2, name);
+                            g_free(name);
                             add_cpreg_to_hashtable(cpu, r, opaque, state,
                                                    ARM_CP_SECSTATE_NS,
-                                                   crm, opc1, opc2);
+                                                   crm, opc1, opc2, r->name);
                             break;
                         }
                     } else {
@@ -5838,7 +5880,7 @@ void define_one_arm_cp_reg_with_opaque(ARMCPU *cpu,
                          * of AArch32 */
                         add_cpreg_to_hashtable(cpu, r, opaque, state,
                                                ARM_CP_SECSTATE_NS,
-                                               crm, opc1, opc2);
+                                               crm, opc1, opc2, r->name);
                     }
                 }
             }
@@ -9555,6 +9597,7 @@ static inline bool m_is_system_region(CPUARMState *env, uint32_t address)
 static bool get_phys_addr_pmsav7(CPUARMState *env, uint32_t address,
                                  MMUAccessType access_type, ARMMMUIdx mmu_idx,
                                  hwaddr *phys_ptr, int *prot,
+                                 target_ulong *page_size,
                                  ARMMMUFaultInfo *fi)
 {
     ARMCPU *cpu = arm_env_get_cpu(env);
@@ -9562,6 +9605,7 @@ static bool get_phys_addr_pmsav7(CPUARMState *env, uint32_t address,
     bool is_user = regime_is_user(env, mmu_idx);
 
     *phys_ptr = address;
+    *page_size = TARGET_PAGE_SIZE;
     *prot = 0;
 
     if (regime_translation_disabled(env, mmu_idx) ||
@@ -9634,15 +9678,11 @@ static bool get_phys_addr_pmsav7(CPUARMState *env, uint32_t address,
                     rsize++;
                 }
             }
-            if (rsize < TARGET_PAGE_BITS) {
-                qemu_log_mask(LOG_UNIMP,
-                              "DRSR[%d]: No support for MPU (sub)region size of"
-                              " %" PRIu32 " bytes. Minimum is %d.\n",
-                              n, (1 << rsize), TARGET_PAGE_SIZE);
-                continue;
-            }
             if (srdis) {
                 continue;
+            }
+            if (rsize < TARGET_PAGE_BITS) {
+                *page_size = 1 << rsize;
             }
             break;
         }
@@ -9724,6 +9764,17 @@ static bool get_phys_addr_pmsav7(CPUARMState *env, uint32_t address,
 
     fi->type = ARMFault_Permission;
     fi->level = 1;
+    /*
+     * Core QEMU code can't handle execution from small pages yet, so
+     * don't try it. This way we'll get an MPU exception, rather than
+     * eventually causing QEMU to exit in get_page_addr_code().
+     */
+    if (*page_size < TARGET_PAGE_SIZE && (*prot & PAGE_EXEC)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "MPU: No support for execution from regions "
+                      "smaller than 1K\n");
+        *prot &= ~PAGE_EXEC;
+    }
     return !(*prot & (1 << access_type));
 }
 
@@ -9754,6 +9805,8 @@ static void v8m_security_lookup(CPUARMState *env, uint32_t address,
     int r;
     bool idau_exempt = false, idau_ns = true, idau_nsc = true;
     int idau_region = IREGION_NOTVALID;
+    uint32_t addr_page_base = address & TARGET_PAGE_MASK;
+    uint32_t addr_page_limit = addr_page_base + (TARGET_PAGE_SIZE - 1);
 
     if (cpu->idau) {
         IDAUInterfaceClass *iic = IDAU_INTERFACE_GET_CLASS(cpu->idau);
@@ -9791,6 +9844,9 @@ static void v8m_security_lookup(CPUARMState *env, uint32_t address,
                 uint32_t limit = env->sau.rlar[r] | 0x1f;
 
                 if (base <= address && limit >= address) {
+                    if (base > addr_page_base || limit < addr_page_limit) {
+                        sattrs->subpage = true;
+                    }
                     if (sattrs->srvalid) {
                         /* If we hit in more than one region then we must report
                          * as Secure, not NS-Callable, with no valid region
@@ -9830,13 +9886,16 @@ static void v8m_security_lookup(CPUARMState *env, uint32_t address,
 static bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
                               MMUAccessType access_type, ARMMMUIdx mmu_idx,
                               hwaddr *phys_ptr, MemTxAttrs *txattrs,
-                              int *prot, ARMMMUFaultInfo *fi, uint32_t *mregion)
+                              int *prot, bool *is_subpage,
+                              ARMMMUFaultInfo *fi, uint32_t *mregion)
 {
     /* Perform a PMSAv8 MPU lookup (without also doing the SAU check
      * that a full phys-to-virt translation does).
      * mregion is (if not NULL) set to the region number which matched,
      * or -1 if no region number is returned (MPU off, address did not
      * hit a region, address hit in multiple regions).
+     * We set is_subpage to true if the region hit doesn't cover the
+     * entire TARGET_PAGE the address is within.
      */
     ARMCPU *cpu = arm_env_get_cpu(env);
     bool is_user = regime_is_user(env, mmu_idx);
@@ -9844,7 +9903,10 @@ static bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
     int n;
     int matchregion = -1;
     bool hit = false;
+    uint32_t addr_page_base = address & TARGET_PAGE_MASK;
+    uint32_t addr_page_limit = addr_page_base + (TARGET_PAGE_SIZE - 1);
 
+    *is_subpage = false;
     *phys_ptr = address;
     *prot = 0;
     if (mregion) {
@@ -9882,6 +9944,10 @@ static bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
                 continue;
             }
 
+            if (base > addr_page_base || limit < addr_page_limit) {
+                *is_subpage = true;
+            }
+
             if (hit) {
                 /* Multiple regions match -- always a failure (unlike
                  * PMSAv7 where highest-numbered-region wins)
@@ -9893,23 +9959,6 @@ static bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
 
             matchregion = n;
             hit = true;
-
-            if (base & ~TARGET_PAGE_MASK) {
-                qemu_log_mask(LOG_UNIMP,
-                              "MPU_RBAR[%d]: No support for MPU region base"
-                              "address of 0x%" PRIx32 ". Minimum alignment is "
-                              "%d\n",
-                              n, base, TARGET_PAGE_BITS);
-                continue;
-            }
-            if ((limit + 1) & ~TARGET_PAGE_MASK) {
-                qemu_log_mask(LOG_UNIMP,
-                              "MPU_RBAR[%d]: No support for MPU region limit"
-                              "address of 0x%" PRIx32 ". Minimum alignment is "
-                              "%d\n",
-                              n, limit, TARGET_PAGE_BITS);
-                continue;
-            }
         }
     }
 
@@ -9945,6 +9994,18 @@ static bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
 
     fi->type = ARMFault_Permission;
     fi->level = 1;
+    /*
+     * Core QEMU code can't handle execution from small pages yet, so
+     * don't try it. This means any attempted execution will generate
+     * an MPU exception, rather than eventually causing QEMU to exit in
+     * get_page_addr_code().
+     */
+    if (*is_subpage && (*prot & PAGE_EXEC)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "MPU: No support for execution from regions "
+                      "smaller than 1K\n");
+        *prot &= ~PAGE_EXEC;
+    }
     return !(*prot & (1 << access_type));
 }
 
@@ -9952,10 +10013,13 @@ static bool pmsav8_mpu_lookup(CPUARMState *env, uint32_t address,
 static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
                                  MMUAccessType access_type, ARMMMUIdx mmu_idx,
                                  hwaddr *phys_ptr, MemTxAttrs *txattrs,
-                                 int *prot, ARMMMUFaultInfo *fi)
+                                 int *prot, target_ulong *page_size,
+                                 ARMMMUFaultInfo *fi)
 {
     uint32_t secure = regime_is_secure(env, mmu_idx);
     V8M_SAttributes sattrs = {};
+    bool ret;
+    bool mpu_is_subpage;
 
     if (arm_feature(env, ARM_FEATURE_M_SECURITY)) {
         v8m_security_lookup(env, address, access_type, mmu_idx, &sattrs);
@@ -9983,6 +10047,7 @@ static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
                 } else {
                     fi->type = ARMFault_QEMU_SFault;
                 }
+                *page_size = sattrs.subpage ? 1 : TARGET_PAGE_SIZE;
                 *phys_ptr = address;
                 *prot = 0;
                 return true;
@@ -10005,6 +10070,7 @@ static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
                  * for M_FAKE_FSR_SFAULT in arm_v7m_cpu_do_interrupt().
                  */
                 fi->type = ARMFault_QEMU_SFault;
+                *page_size = sattrs.subpage ? 1 : TARGET_PAGE_SIZE;
                 *phys_ptr = address;
                 *prot = 0;
                 return true;
@@ -10012,8 +10078,22 @@ static bool get_phys_addr_pmsav8(CPUARMState *env, uint32_t address,
         }
     }
 
-    return pmsav8_mpu_lookup(env, address, access_type, mmu_idx, phys_ptr,
-                             txattrs, prot, fi, NULL);
+    ret = pmsav8_mpu_lookup(env, address, access_type, mmu_idx, phys_ptr,
+                            txattrs, prot, &mpu_is_subpage, fi, NULL);
+    /*
+     * TODO: this is a temporary hack to ignore the fact that the SAU region
+     * is smaller than a page if this is an executable region. We never
+     * supported small MPU regions, but we did (accidentally) allow small
+     * SAU regions, and if we now made small SAU regions not be executable
+     * then this would break previously working guest code. We can't
+     * remove this until/unless we implement support for execution from
+     * small regions.
+     */
+    if (*prot & PAGE_EXEC) {
+        sattrs.subpage = false;
+    }
+    *page_size = sattrs.subpage || mpu_is_subpage ? 1 : TARGET_PAGE_SIZE;
+    return ret;
 }
 
 static bool get_phys_addr_pmsav5(CPUARMState *env, uint32_t address,
@@ -10289,11 +10369,11 @@ static bool get_phys_addr(CPUARMState *env, target_ulong address,
         if (arm_feature(env, ARM_FEATURE_V8)) {
             /* PMSAv8 */
             ret = get_phys_addr_pmsav8(env, address, access_type, mmu_idx,
-                                       phys_ptr, attrs, prot, fi);
+                                       phys_ptr, attrs, prot, page_size, fi);
         } else if (arm_feature(env, ARM_FEATURE_V7)) {
             /* PMSAv7 */
             ret = get_phys_addr_pmsav7(env, address, access_type, mmu_idx,
-                                       phys_ptr, prot, fi);
+                                       phys_ptr, prot, page_size, fi);
         } else {
             /* Pre-v7 MPU */
             ret = get_phys_addr_pmsav5(env, address, access_type, mmu_idx,
@@ -10355,9 +10435,15 @@ bool arm_tlb_fill(CPUState *cs, vaddr address,
                         core_to_arm_mmu_idx(env, mmu_idx), &phys_addr,
                         &attrs, &prot, &page_size, fi, NULL);
     if (!ret) {
-        /* Map a single [sub]page.  */
-        phys_addr &= TARGET_PAGE_MASK;
-        address &= TARGET_PAGE_MASK;
+        /*
+         * Map a single [sub]page. Regions smaller than our declared
+         * target page size are handled specially, so for those we
+         * pass in the exact addresses.
+         */
+        if (page_size >= TARGET_PAGE_SIZE) {
+            phys_addr &= TARGET_PAGE_MASK;
+            address &= TARGET_PAGE_MASK;
+        }
         tlb_set_page_with_attrs(cs, address, phys_addr, attrs,
                                 prot, mmu_idx, page_size);
         return 0;
@@ -10701,6 +10787,7 @@ uint32_t HELPER(v7m_tt)(CPUARMState *env, uint32_t addr, uint32_t op)
     uint32_t mregion;
     bool targetpriv;
     bool targetsec = env->v7m.secure;
+    bool is_subpage;
 
     /* Work out what the security state and privilege level we're
      * interested in is...
@@ -10730,7 +10817,8 @@ uint32_t HELPER(v7m_tt)(CPUARMState *env, uint32_t addr, uint32_t op)
     if (arm_current_el(env) != 0 || alt) {
         /* We can ignore the return value as prot is always set */
         pmsav8_mpu_lookup(env, addr, MMU_DATA_LOAD, mmu_idx,
-                          &phys_addr, &attrs, &prot, &fi, &mregion);
+                          &phys_addr, &attrs, &prot, &is_subpage,
+                          &fi, &mregion);
         if (mregion == -1) {
             mrvalid = false;
             mregion = 0;
@@ -11311,35 +11399,35 @@ DO_VFP_cmp(d, float64)
 
 /* Integer to float and float to integer conversions */
 
-#define CONV_ITOF(name, fsz, sign) \
-    float##fsz HELPER(name)(uint32_t x, void *fpstp) \
-{ \
-    float_status *fpst = fpstp; \
-    return sign##int32_to_##float##fsz((sign##int32_t)x, fpst); \
+#define CONV_ITOF(name, ftype, fsz, sign)                           \
+ftype HELPER(name)(uint32_t x, void *fpstp)                         \
+{                                                                   \
+    float_status *fpst = fpstp;                                     \
+    return sign##int32_to_##float##fsz((sign##int32_t)x, fpst);     \
 }
 
-#define CONV_FTOI(name, fsz, sign, round) \
-uint32_t HELPER(name)(float##fsz x, void *fpstp) \
-{ \
-    float_status *fpst = fpstp; \
-    if (float##fsz##_is_any_nan(x)) { \
-        float_raise(float_flag_invalid, fpst); \
-        return 0; \
-    } \
-    return float##fsz##_to_##sign##int32##round(x, fpst); \
+#define CONV_FTOI(name, ftype, fsz, sign, round)                \
+uint32_t HELPER(name)(ftype x, void *fpstp)                     \
+{                                                               \
+    float_status *fpst = fpstp;                                 \
+    if (float##fsz##_is_any_nan(x)) {                           \
+        float_raise(float_flag_invalid, fpst);                  \
+        return 0;                                               \
+    }                                                           \
+    return float##fsz##_to_##sign##int32##round(x, fpst);       \
 }
 
-#define FLOAT_CONVS(name, p, fsz, sign) \
-CONV_ITOF(vfp_##name##to##p, fsz, sign) \
-CONV_FTOI(vfp_to##name##p, fsz, sign, ) \
-CONV_FTOI(vfp_to##name##z##p, fsz, sign, _round_to_zero)
+#define FLOAT_CONVS(name, p, ftype, fsz, sign)            \
+    CONV_ITOF(vfp_##name##to##p, ftype, fsz, sign)        \
+    CONV_FTOI(vfp_to##name##p, ftype, fsz, sign, )        \
+    CONV_FTOI(vfp_to##name##z##p, ftype, fsz, sign, _round_to_zero)
 
-FLOAT_CONVS(si, h, 16, )
-FLOAT_CONVS(si, s, 32, )
-FLOAT_CONVS(si, d, 64, )
-FLOAT_CONVS(ui, h, 16, u)
-FLOAT_CONVS(ui, s, 32, u)
-FLOAT_CONVS(ui, d, 64, u)
+FLOAT_CONVS(si, h, uint32_t, 16, )
+FLOAT_CONVS(si, s, float32, 32, )
+FLOAT_CONVS(si, d, float64, 64, )
+FLOAT_CONVS(ui, h, uint32_t, 16, u)
+FLOAT_CONVS(ui, s, float32, 32, u)
+FLOAT_CONVS(ui, d, float64, 64, u)
 
 #undef CONV_ITOF
 #undef CONV_FTOI
@@ -11348,20 +11436,12 @@ FLOAT_CONVS(ui, d, 64, u)
 /* floating point conversion */
 float64 VFP_HELPER(fcvtd, s)(float32 x, CPUARMState *env)
 {
-    float64 r = float32_to_float64(x, &env->vfp.fp_status);
-    /* ARM requires that S<->D conversion of any kind of NaN generates
-     * a quiet NaN by forcing the most significant frac bit to 1.
-     */
-    return float64_maybe_silence_nan(r, &env->vfp.fp_status);
+    return float32_to_float64(x, &env->vfp.fp_status);
 }
 
 float32 VFP_HELPER(fcvts, d)(float64 x, CPUARMState *env)
 {
-    float32 r =  float64_to_float32(x, &env->vfp.fp_status);
-    /* ARM requires that S<->D conversion of any kind of NaN generates
-     * a quiet NaN by forcing the most significant frac bit to 1.
-     */
-    return float32_maybe_silence_nan(r, &env->vfp.fp_status);
+    return float64_to_float32(x, &env->vfp.fp_status);
 }
 
 /* VFP3 fixed point conversion.  */
@@ -11420,11 +11500,94 @@ VFP_CONV_FIX_A64(sq, s, 32, 64, int64)
 VFP_CONV_FIX(uh, s, 32, 32, uint16)
 VFP_CONV_FIX(ul, s, 32, 32, uint32)
 VFP_CONV_FIX_A64(uq, s, 32, 64, uint64)
-VFP_CONV_FIX_A64(sl, h, 16, 32, int32)
-VFP_CONV_FIX_A64(ul, h, 16, 32, uint32)
+
 #undef VFP_CONV_FIX
 #undef VFP_CONV_FIX_FLOAT
 #undef VFP_CONV_FLOAT_FIX_ROUND
+#undef VFP_CONV_FIX_A64
+
+/* Conversion to/from f16 can overflow to infinity before/after scaling.
+ * Therefore we convert to f64, scale, and then convert f64 to f16; or
+ * vice versa for conversion to integer.
+ *
+ * For 16- and 32-bit integers, the conversion to f64 never rounds.
+ * For 64-bit integers, any integer that would cause rounding will also
+ * overflow to f16 infinity, so there is no double rounding problem.
+ */
+
+static float16 do_postscale_fp16(float64 f, int shift, float_status *fpst)
+{
+    return float64_to_float16(float64_scalbn(f, -shift, fpst), true, fpst);
+}
+
+uint32_t HELPER(vfp_sltoh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return do_postscale_fp16(int32_to_float64(x, fpst), shift, fpst);
+}
+
+uint32_t HELPER(vfp_ultoh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return do_postscale_fp16(uint32_to_float64(x, fpst), shift, fpst);
+}
+
+uint32_t HELPER(vfp_sqtoh)(uint64_t x, uint32_t shift, void *fpst)
+{
+    return do_postscale_fp16(int64_to_float64(x, fpst), shift, fpst);
+}
+
+uint32_t HELPER(vfp_uqtoh)(uint64_t x, uint32_t shift, void *fpst)
+{
+    return do_postscale_fp16(uint64_to_float64(x, fpst), shift, fpst);
+}
+
+static float64 do_prescale_fp16(float16 f, int shift, float_status *fpst)
+{
+    if (unlikely(float16_is_any_nan(f))) {
+        float_raise(float_flag_invalid, fpst);
+        return 0;
+    } else {
+        int old_exc_flags = get_float_exception_flags(fpst);
+        float64 ret;
+
+        ret = float16_to_float64(f, true, fpst);
+        ret = float64_scalbn(ret, shift, fpst);
+        old_exc_flags |= get_float_exception_flags(fpst)
+            & float_flag_input_denormal;
+        set_float_exception_flags(old_exc_flags, fpst);
+
+        return ret;
+    }
+}
+
+uint32_t HELPER(vfp_toshh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return float64_to_int16(do_prescale_fp16(x, shift, fpst), fpst);
+}
+
+uint32_t HELPER(vfp_touhh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return float64_to_uint16(do_prescale_fp16(x, shift, fpst), fpst);
+}
+
+uint32_t HELPER(vfp_toslh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return float64_to_int32(do_prescale_fp16(x, shift, fpst), fpst);
+}
+
+uint32_t HELPER(vfp_toulh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return float64_to_uint32(do_prescale_fp16(x, shift, fpst), fpst);
+}
+
+uint64_t HELPER(vfp_tosqh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return float64_to_int64(do_prescale_fp16(x, shift, fpst), fpst);
+}
+
+uint64_t HELPER(vfp_touqh)(uint32_t x, uint32_t shift, void *fpst)
+{
+    return float64_to_uint64(do_prescale_fp16(x, shift, fpst), fpst);
+}
 
 /* Set the current fp rounding mode and return the old one.
  * The argument is a softfloat float_round_ value.
@@ -11457,64 +11620,56 @@ uint32_t HELPER(set_neon_rmode)(uint32_t rmode, CPUARMState *env)
 }
 
 /* Half precision conversions.  */
-static float32 do_fcvt_f16_to_f32(uint32_t a, CPUARMState *env, float_status *s)
+float32 HELPER(vfp_fcvt_f16_to_f32)(uint32_t a, void *fpstp, uint32_t ahp_mode)
 {
-    int ieee = (env->vfp.xregs[ARM_VFP_FPSCR] & (1 << 26)) == 0;
-    float32 r = float16_to_float32(make_float16(a), ieee, s);
-    if (ieee) {
-        return float32_maybe_silence_nan(r, s);
-    }
+    /* Squash FZ16 to 0 for the duration of conversion.  In this case,
+     * it would affect flushing input denormals.
+     */
+    float_status *fpst = fpstp;
+    flag save = get_flush_inputs_to_zero(fpst);
+    set_flush_inputs_to_zero(false, fpst);
+    float32 r = float16_to_float32(a, !ahp_mode, fpst);
+    set_flush_inputs_to_zero(save, fpst);
     return r;
 }
 
-static uint32_t do_fcvt_f32_to_f16(float32 a, CPUARMState *env, float_status *s)
+uint32_t HELPER(vfp_fcvt_f32_to_f16)(float32 a, void *fpstp, uint32_t ahp_mode)
 {
-    int ieee = (env->vfp.xregs[ARM_VFP_FPSCR] & (1 << 26)) == 0;
-    float16 r = float32_to_float16(a, ieee, s);
-    if (ieee) {
-        r = float16_maybe_silence_nan(r, s);
-    }
-    return float16_val(r);
-}
-
-float32 HELPER(neon_fcvt_f16_to_f32)(uint32_t a, CPUARMState *env)
-{
-    return do_fcvt_f16_to_f32(a, env, &env->vfp.standard_fp_status);
-}
-
-uint32_t HELPER(neon_fcvt_f32_to_f16)(float32 a, CPUARMState *env)
-{
-    return do_fcvt_f32_to_f16(a, env, &env->vfp.standard_fp_status);
-}
-
-float32 HELPER(vfp_fcvt_f16_to_f32)(uint32_t a, CPUARMState *env)
-{
-    return do_fcvt_f16_to_f32(a, env, &env->vfp.fp_status);
-}
-
-uint32_t HELPER(vfp_fcvt_f32_to_f16)(float32 a, CPUARMState *env)
-{
-    return do_fcvt_f32_to_f16(a, env, &env->vfp.fp_status);
-}
-
-float64 HELPER(vfp_fcvt_f16_to_f64)(uint32_t a, CPUARMState *env)
-{
-    int ieee = (env->vfp.xregs[ARM_VFP_FPSCR] & (1 << 26)) == 0;
-    float64 r = float16_to_float64(make_float16(a), ieee, &env->vfp.fp_status);
-    if (ieee) {
-        return float64_maybe_silence_nan(r, &env->vfp.fp_status);
-    }
+    /* Squash FZ16 to 0 for the duration of conversion.  In this case,
+     * it would affect flushing output denormals.
+     */
+    float_status *fpst = fpstp;
+    flag save = get_flush_to_zero(fpst);
+    set_flush_to_zero(false, fpst);
+    float16 r = float32_to_float16(a, !ahp_mode, fpst);
+    set_flush_to_zero(save, fpst);
     return r;
 }
 
-uint32_t HELPER(vfp_fcvt_f64_to_f16)(float64 a, CPUARMState *env)
+float64 HELPER(vfp_fcvt_f16_to_f64)(uint32_t a, void *fpstp, uint32_t ahp_mode)
 {
-    int ieee = (env->vfp.xregs[ARM_VFP_FPSCR] & (1 << 26)) == 0;
-    float16 r = float64_to_float16(a, ieee, &env->vfp.fp_status);
-    if (ieee) {
-        r = float16_maybe_silence_nan(r, &env->vfp.fp_status);
-    }
-    return float16_val(r);
+    /* Squash FZ16 to 0 for the duration of conversion.  In this case,
+     * it would affect flushing input denormals.
+     */
+    float_status *fpst = fpstp;
+    flag save = get_flush_inputs_to_zero(fpst);
+    set_flush_inputs_to_zero(false, fpst);
+    float64 r = float16_to_float64(a, !ahp_mode, fpst);
+    set_flush_inputs_to_zero(save, fpst);
+    return r;
+}
+
+uint32_t HELPER(vfp_fcvt_f64_to_f16)(float64 a, void *fpstp, uint32_t ahp_mode)
+{
+    /* Squash FZ16 to 0 for the duration of conversion.  In this case,
+     * it would affect flushing output denormals.
+     */
+    float_status *fpst = fpstp;
+    flag save = get_flush_to_zero(fpst);
+    set_flush_to_zero(false, fpst);
+    float16 r = float64_to_float16(a, !ahp_mode, fpst);
+    set_flush_to_zero(save, fpst);
+    return r;
 }
 
 #define float32_two make_float32(0x40000000)
@@ -11642,7 +11797,7 @@ static bool round_to_inf(float_status *fpst, bool sign_bit)
     g_assert_not_reached();
 }
 
-float16 HELPER(recpe_f16)(float16 input, void *fpstp)
+uint32_t HELPER(recpe_f16)(uint32_t input, void *fpstp)
 {
     float_status *fpst = fpstp;
     float16 f16 = float16_squash_input_denormal(input, fpst);
@@ -11656,7 +11811,7 @@ float16 HELPER(recpe_f16)(float16 input, void *fpstp)
         float16 nan = f16;
         if (float16_is_signaling_nan(f16, fpst)) {
             float_raise(float_flag_invalid, fpst);
-            nan = float16_maybe_silence_nan(f16, fpst);
+            nan = float16_silence_nan(f16, fpst);
         }
         if (fpst->default_nan_mode) {
             nan =  float16_default_nan(fpst);
@@ -11704,7 +11859,7 @@ float32 HELPER(recpe_f32)(float32 input, void *fpstp)
         float32 nan = f32;
         if (float32_is_signaling_nan(f32, fpst)) {
             float_raise(float_flag_invalid, fpst);
-            nan = float32_maybe_silence_nan(f32, fpst);
+            nan = float32_silence_nan(f32, fpst);
         }
         if (fpst->default_nan_mode) {
             nan =  float32_default_nan(fpst);
@@ -11752,7 +11907,7 @@ float64 HELPER(recpe_f64)(float64 input, void *fpstp)
         float64 nan = f64;
         if (float64_is_signaling_nan(f64, fpst)) {
             float_raise(float_flag_invalid, fpst);
-            nan = float64_maybe_silence_nan(f64, fpst);
+            nan = float64_silence_nan(f64, fpst);
         }
         if (fpst->default_nan_mode) {
             nan =  float64_default_nan(fpst);
@@ -11837,7 +11992,7 @@ static uint64_t recip_sqrt_estimate(int *exp , int exp_off, uint64_t frac)
     return extract64(estimate, 0, 8) << 44;
 }
 
-float16 HELPER(rsqrte_f16)(float16 input, void *fpstp)
+uint32_t HELPER(rsqrte_f16)(uint32_t input, void *fpstp)
 {
     float_status *s = fpstp;
     float16 f16 = float16_squash_input_denormal(input, s);
@@ -11851,7 +12006,7 @@ float16 HELPER(rsqrte_f16)(float16 input, void *fpstp)
         float16 nan = f16;
         if (float16_is_signaling_nan(f16, s)) {
             float_raise(float_flag_invalid, s);
-            nan = float16_maybe_silence_nan(f16, s);
+            nan = float16_silence_nan(f16, s);
         }
         if (s->default_nan_mode) {
             nan =  float16_default_nan(s);
@@ -11895,7 +12050,7 @@ float32 HELPER(rsqrte_f32)(float32 input, void *fpstp)
         float32 nan = f32;
         if (float32_is_signaling_nan(f32, s)) {
             float_raise(float_flag_invalid, s);
-            nan = float32_maybe_silence_nan(f32, s);
+            nan = float32_silence_nan(f32, s);
         }
         if (s->default_nan_mode) {
             nan =  float32_default_nan(s);
@@ -11938,7 +12093,7 @@ float64 HELPER(rsqrte_f64)(float64 input, void *fpstp)
         float64 nan = f64;
         if (float64_is_signaling_nan(f64, s)) {
             float_raise(float_flag_invalid, s);
-            nan = float64_maybe_silence_nan(f64, s);
+            nan = float64_silence_nan(f64, s);
         }
         if (s->default_nan_mode) {
             nan =  float64_default_nan(s);

@@ -371,8 +371,7 @@ static void handle_keydown(SDL_Event *ev)
             }
             break;
         case SDL_SCANCODE_U:
-            sdl2_window_destroy(scon);
-            sdl2_window_create(scon);
+            sdl2_window_resize(scon);
             if (!scon->opengl) {
                 /* re-create scon->texture */
                 sdl2_2d_switch(&scon->dcl, scon->surface);
@@ -425,7 +424,7 @@ static void handle_keyup(SDL_Event *ev)
 
 static void handle_textinput(SDL_Event *ev)
 {
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->text.windowID);
     QemuConsole *con = scon ? scon->dcl.con : NULL;
 
     if (qemu_console_is_graphic(con)) {
@@ -437,9 +436,9 @@ static void handle_textinput(SDL_Event *ev)
 static void handle_mousemotion(SDL_Event *ev)
 {
     int max_x, max_y;
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->motion.windowID);
 
-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
@@ -469,9 +468,9 @@ static void handle_mousebutton(SDL_Event *ev)
 {
     int buttonstate = SDL_GetMouseState(NULL, NULL);
     SDL_MouseButtonEvent *bev;
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->button.windowID);
 
-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
@@ -493,11 +492,11 @@ static void handle_mousebutton(SDL_Event *ev)
 
 static void handle_mousewheel(SDL_Event *ev)
 {
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->wheel.windowID);
     SDL_MouseWheelEvent *wev = &ev->wheel;
     InputButton btn;
 
-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
@@ -804,7 +803,6 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         return;
     }
     sdl2_console = g_new0(struct sdl2_console, sdl2_num_outputs);
-    sdl2_console->opts = o;
     for (i = 0; i < sdl2_num_outputs; i++) {
         QemuConsole *con = qemu_console_lookup_by_index(i);
         assert(con != NULL);
@@ -812,6 +810,7 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
             sdl2_console[i].hidden = true;
         }
         sdl2_console[i].idx = i;
+        sdl2_console[i].opts = o;
 #ifdef CONFIG_OPENGL
         sdl2_console[i].opengl = display_opengl;
         sdl2_console[i].dcl.ops = display_opengl ? &dcl_gl_ops : &dcl_2d_ops;

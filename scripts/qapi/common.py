@@ -16,10 +16,8 @@ import errno
 import os
 import re
 import string
-try:
-    from collections import OrderedDict
-except:
-    from ordereddict import OrderedDict
+import sys
+from collections import OrderedDict
 
 builtin_types = {
     'null':     'QTYPE_QNULL',
@@ -343,7 +341,10 @@ class QAPISchemaParser(object):
             return None
 
         try:
-            fobj = open(incl_fname, 'r')
+            if sys.version_info[0] >= 3:
+                fobj = open(incl_fname, 'r', encoding='utf-8')
+            else:
+                fobj = open(incl_fname, 'r')
         except IOError as e:
             raise QAPISemError(info, '%s: %s' % (e.strerror, incl_fname))
         return QAPISchemaParser(fobj, previously_included, info)
@@ -782,13 +783,6 @@ def check_union(expr, info):
                                    "enum '%s'"
                                    % (key, enum_define['enum']))
 
-    # If discriminator is user-defined, ensure all values are covered
-    if enum_define:
-        for value in enum_define['data']:
-            if value not in members.keys():
-                raise QAPISemError(info, "Union '%s' data missing '%s' branch"
-                                   % (name, value))
-
 
 def check_alternate(expr, info):
     name = expr['alternate']
@@ -872,7 +866,8 @@ def check_keys(expr_elem, meta, required, optional=[]):
             raise QAPISemError(info,
                                "'%s' of %s '%s' should only use false value"
                                % (key, meta, name))
-        if (key == 'boxed' or key == 'allow-oob') and value is not True:
+        if (key == 'boxed' or key == 'allow-oob' or
+            key == 'allow-preconfig') and value is not True:
             raise QAPISemError(info,
                                "'%s' of %s '%s' should only use true value"
                                % (key, meta, name))
@@ -922,7 +917,7 @@ def check_exprs(exprs):
             meta = 'command'
             check_keys(expr_elem, 'command', [],
                        ['data', 'returns', 'gen', 'success-response',
-                        'boxed', 'allow-oob'])
+                        'boxed', 'allow-oob', 'allow-preconfig'])
         elif 'event' in expr:
             meta = 'event'
             check_keys(expr_elem, 'event', [], ['data', 'boxed'])
@@ -1044,8 +1039,8 @@ class QAPISchemaVisitor(object):
     def visit_alternate_type(self, name, info, variants):
         pass
 
-    def visit_command(self, name, info, arg_type, ret_type,
-                      gen, success_response, boxed, allow_oob):
+    def visit_command(self, name, info, arg_type, ret_type, gen,
+                      success_response, boxed, allow_oob, allow_preconfig):
         pass
 
     def visit_event(self, name, info, arg_type, boxed):
@@ -1359,6 +1354,14 @@ class QAPISchemaObjectTypeVariants(object):
             self.tag_member = seen[c_name(self._tag_name)]
             assert self._tag_name == self.tag_member.name
         assert isinstance(self.tag_member.type, QAPISchemaEnumType)
+        if self._tag_name:    # flat union
+            # branches that are not explicitly covered get an empty type
+            cases = set([v.name for v in self.variants])
+            for val in self.tag_member.type.values:
+                if val.name not in cases:
+                    v = QAPISchemaObjectTypeVariant(val.name, 'q_empty')
+                    v.set_owner(self.tag_member.owner)
+                    self.variants.append(v)
         for v in self.variants:
             v.check(schema)
             # Union names must match enum values; alternate names are
@@ -1422,7 +1425,7 @@ class QAPISchemaAlternateType(QAPISchemaType):
 
 class QAPISchemaCommand(QAPISchemaEntity):
     def __init__(self, name, info, doc, arg_type, ret_type,
-                 gen, success_response, boxed, allow_oob):
+                 gen, success_response, boxed, allow_oob, allow_preconfig):
         QAPISchemaEntity.__init__(self, name, info, doc)
         assert not arg_type or isinstance(arg_type, str)
         assert not ret_type or isinstance(ret_type, str)
@@ -1434,6 +1437,7 @@ class QAPISchemaCommand(QAPISchemaEntity):
         self.success_response = success_response
         self.boxed = boxed
         self.allow_oob = allow_oob
+        self.allow_preconfig = allow_preconfig
 
     def check(self, schema):
         if self._arg_type_name:
@@ -1458,7 +1462,8 @@ class QAPISchemaCommand(QAPISchemaEntity):
         visitor.visit_command(self.name, self.info,
                               self.arg_type, self.ret_type,
                               self.gen, self.success_response,
-                              self.boxed, self.allow_oob)
+                              self.boxed, self.allow_oob,
+                              self.allow_preconfig)
 
 
 class QAPISchemaEvent(QAPISchemaEntity):
@@ -1492,7 +1497,11 @@ class QAPISchemaEvent(QAPISchemaEntity):
 class QAPISchema(object):
     def __init__(self, fname):
         self._fname = fname
-        parser = QAPISchemaParser(open(fname, 'r'))
+        if sys.version_info[0] >= 3:
+            f = open(fname, 'r', encoding='utf-8')
+        else:
+            f = open(fname, 'r')
+        parser = QAPISchemaParser(f)
         exprs = check_exprs(parser.exprs)
         self.docs = parser.docs
         self._entity_list = []
@@ -1678,6 +1687,7 @@ class QAPISchema(object):
         success_response = expr.get('success-response', True)
         boxed = expr.get('boxed', False)
         allow_oob = expr.get('allow-oob', False)
+        allow_preconfig = expr.get('allow-preconfig', False)
         if isinstance(data, OrderedDict):
             data = self._make_implicit_object_type(
                 name, info, doc, 'arg', self._make_members(data, info))
@@ -1686,7 +1696,7 @@ class QAPISchema(object):
             rets = self._make_array_type(rets[0], info)
         self._def_entity(QAPISchemaCommand(name, info, doc, data, rets,
                                            gen, success_response,
-                                           boxed, allow_oob))
+                                           boxed, allow_oob, allow_preconfig))
 
     def _def_event(self, expr, info, doc):
         name = expr['event']
@@ -1822,7 +1832,7 @@ def c_name(name, protect=True):
                      'and', 'and_eq', 'bitand', 'bitor', 'compl', 'not',
                      'not_eq', 'or', 'or_eq', 'xor', 'xor_eq'])
     # namespace pollution:
-    polluted_words = set(['unix', 'errno', 'mips', 'sparc'])
+    polluted_words = set(['unix', 'errno', 'mips', 'sparc', 'i386'])
     name = name.translate(c_name_trans)
     if protect and (name in c89_words | c99_words | c11_words | gcc_words
                     | cpp_words | polluted_words):
@@ -2005,7 +2015,10 @@ class QAPIGen(object):
                 if e.errno != errno.EEXIST:
                     raise
         fd = os.open(pathname, os.O_RDWR | os.O_CREAT, 0o666)
-        f = os.fdopen(fd, 'r+')
+        if sys.version_info[0] >= 3:
+            f = open(fd, 'r+', encoding='utf-8')
+        else:
+            f = os.fdopen(fd, 'r+')
         text = (self._top(fname) + self._preamble + self._body
                 + self._bottom(fname))
         oldtext = f.read(len(text) + 1)

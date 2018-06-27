@@ -496,9 +496,11 @@ Resulting in these JSON objects:
 
 Notice that in a flat union, the discriminator name is controlled by
 the user, but because it must map to a base member with enum type, the
-code generator can ensure that branches exist for all values of the
-enum (although the order of the keys need not match the declaration of
-the enum).  In the resulting generated C data types, a flat union is
+code generator ensures that branches match the existing values of the
+enum. The order of the keys need not match the declaration of the enum.
+The keys need not cover all possible enum values. Omitted enum values
+are still valid branches that add no additional members to the data type.
+In the resulting generated C data types, a flat union is
 represented as a struct with the base members included directly, and
 then a union of structures for each branch of the struct.
 
@@ -559,7 +561,7 @@ following example objects:
 Usage: { 'command': STRING, '*data': COMPLEX-TYPE-NAME-OR-DICT,
          '*returns': TYPE-NAME, '*boxed': true,
          '*gen': false, '*success-response': false,
-         '*allow-oob': true }
+         '*allow-oob': true, '*allow-preconfig': true }
 
 Commands are defined by using a dictionary containing several members,
 where three members are most common.  The 'command' member is a
@@ -682,6 +684,15 @@ OOB command handlers must satisfy the following conditions:
   enabled for postcopy live migration.
 
 If in doubt, do not implement OOB execution support.
+
+A command may use the optional 'allow-preconfig' key to permit its execution
+at early runtime configuration stage (preconfig runstate).
+If not specified then a command defaults to 'allow-preconfig': false.
+
+An example of declaring a command that is enabled during preconfig:
+ { 'command': 'qmp_capabilities',
+   'data': { '*enable': [ 'QMPCapability' ] },
+   'allow-preconfig': true }
 
 === Events ===
 
@@ -1340,7 +1351,7 @@ Example:
         emit(EXAMPLE_QAPI_EVENT_MY_EVENT, qmp, &err);
 
         error_propagate(errp, err);
-        QDECREF(qmp);
+        qobject_unref(qmp);
     }
 
     const QEnumLookup example_QAPIEvent_lookup = {

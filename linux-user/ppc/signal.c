@@ -18,7 +18,6 @@
  */
 #include "qemu/osdep.h"
 #include "qemu.h"
-#include "target_signal.h"
 #include "signal-common.h"
 #include "linux-user/trace.h"
 
@@ -217,13 +216,7 @@ static target_ulong get_sigframe(struct target_sigaction *ka,
 {
     target_ulong oldsp;
 
-    oldsp = env->gpr[1];
-
-    if ((ka->sa_flags & TARGET_SA_ONSTACK) &&
-            (sas_ss_flags(oldsp) == 0)) {
-        oldsp = (target_sigaltstack_used.ss_sp
-                 + target_sigaltstack_used.ss_size);
-    }
+    oldsp = target_sigsp(get_sp_from_cpustate(env), ka);
 
     return (oldsp - frame_size) & ~0xFUL;
 }
@@ -515,12 +508,7 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
 
     __put_user(0, &rt_sf->uc.tuc_flags);
     __put_user(0, &rt_sf->uc.tuc_link);
-    __put_user((target_ulong)target_sigaltstack_used.ss_sp,
-               &rt_sf->uc.tuc_stack.ss_sp);
-    __put_user(sas_ss_flags(env->gpr[1]),
-               &rt_sf->uc.tuc_stack.ss_flags);
-    __put_user(target_sigaltstack_used.ss_size,
-               &rt_sf->uc.tuc_stack.ss_size);
+    target_save_altstack(&rt_sf->uc.tuc_stack, env);
 #if !defined(TARGET_PPC64)
     __put_user(h2g (&rt_sf->uc.tuc_mcontext),
                &rt_sf->uc.tuc_regs);

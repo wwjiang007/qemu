@@ -120,7 +120,6 @@ void fork_start(void)
 {
     start_exclusive();
     mmap_fork_start();
-    qemu_mutex_lock(&tb_ctx.tb_lock);
     cpu_list_lock();
 }
 
@@ -136,14 +135,12 @@ void fork_end(int child)
                 QTAILQ_REMOVE(&cpus, cpu, node);
             }
         }
-        qemu_mutex_init(&tb_ctx.tb_lock);
         qemu_init_cpu_list();
         gdbserver_fork(thread_cpu);
         /* qemu_init_cpu_list() takes care of reinitializing the
          * exclusive state, so we don't need to end_exclusive() here.
          */
     } else {
-        qemu_mutex_unlock(&tb_ctx.tb_lock);
         cpu_list_unlock();
         end_exclusive();
     }
@@ -671,9 +668,8 @@ int main(int argc, char **argv, char **envp)
     }
     cpu_type = parse_cpu_model(cpu_model);
 
+    /* init tcg before creating CPUs and to get qemu_host_page_size */
     tcg_exec_init(0);
-    /* NOTE: we need to init the CPU at this stage to get
-       qemu_host_page_size */
 
     cpu = cpu_create(cpu_type);
     env = cpu->env_ptr;
@@ -693,7 +689,7 @@ int main(int argc, char **argv, char **envp)
     envlist_free(envlist);
 
     /*
-     * Now that page sizes are configured in cpu_init() we can do
+     * Now that page sizes are configured in tcg_exec_init() we can do
      * proper page alignment for guest_base.
      */
     guest_base = HOST_PAGE_ALIGN(guest_base);

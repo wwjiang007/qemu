@@ -655,6 +655,7 @@ struct TCGContext {
     int nb_globals;
     int nb_temps;
     int nb_indirects;
+    int nb_ops;
 
     /* goto_tb support */
     tcg_insn_unit *code_buf;
@@ -693,6 +694,8 @@ struct TCGContext {
 
     /* Threshold to flush the translated code buffer.  */
     void *code_gen_highwater;
+
+    size_t tb_phys_invalidate_count;
 
     /* Track which vCPU triggers events */
     CPUState *cpu;                      /* *_trans */
@@ -844,12 +847,19 @@ static inline TCGOp *tcg_last_op(void)
 /* Test for whether to terminate the TB for using too many opcodes.  */
 static inline bool tcg_op_buf_full(void)
 {
-    return false;
+    /* This is not a hard limit, it merely stops translation when
+     * we have produced "enough" opcodes.  We want to limit TB size
+     * such that a RISC host can reasonably use a 16-bit signed
+     * branch within the TB.  We also need to be mindful of the
+     * 16-bit unsigned offsets, TranslationBlock.jmp_reset_offset[]
+     * and TCGContext.gen_insn_end_off[].
+     */
+    return tcg_ctx->nb_ops >= 4000;
 }
 
 /* pool based memory allocation */
 
-/* user-mode: tb_lock must be held for tcg_malloc_internal. */
+/* user-mode: mmap_lock must be held for tcg_malloc_internal. */
 void *tcg_malloc_internal(TCGContext *s, int size);
 void tcg_pool_reset(TCGContext *s);
 TranslationBlock *tcg_tb_alloc(TCGContext *s);
@@ -860,7 +870,14 @@ void tcg_region_reset_all(void);
 size_t tcg_code_size(void);
 size_t tcg_code_capacity(void);
 
-/* user-mode: Called with tb_lock held.  */
+void tcg_tb_insert(TranslationBlock *tb);
+void tcg_tb_remove(TranslationBlock *tb);
+size_t tcg_tb_phys_invalidate_count(void);
+TranslationBlock *tcg_tb_lookup(uintptr_t tc_ptr);
+void tcg_tb_foreach(GTraverseFunc func, gpointer user_data);
+size_t tcg_nb_tbs(void);
+
+/* user-mode: Called with mmap_lock held.  */
 static inline void *tcg_malloc(int size)
 {
     TCGContext *s = tcg_ctx;
@@ -1233,9 +1250,10 @@ static inline unsigned get_mmuidx(TCGMemOpIdx oi)
  * to this default (which just calls the prologue.code emitted by
  * tcg_target_qemu_prologue()).
  */
-#define TB_EXIT_MASK 3
-#define TB_EXIT_IDX0 0
-#define TB_EXIT_IDX1 1
+#define TB_EXIT_MASK      3
+#define TB_EXIT_IDX0      0
+#define TB_EXIT_IDX1      1
+#define TB_EXIT_IDXMAX    1
 #define TB_EXIT_REQUESTED 3
 
 #ifdef HAVE_TCG_QEMU_TB_EXEC
@@ -1415,12 +1433,20 @@ GEN_ATOMIC_HELPER_ALL(fetch_sub)
 GEN_ATOMIC_HELPER_ALL(fetch_and)
 GEN_ATOMIC_HELPER_ALL(fetch_or)
 GEN_ATOMIC_HELPER_ALL(fetch_xor)
+GEN_ATOMIC_HELPER_ALL(fetch_smin)
+GEN_ATOMIC_HELPER_ALL(fetch_umin)
+GEN_ATOMIC_HELPER_ALL(fetch_smax)
+GEN_ATOMIC_HELPER_ALL(fetch_umax)
 
 GEN_ATOMIC_HELPER_ALL(add_fetch)
 GEN_ATOMIC_HELPER_ALL(sub_fetch)
 GEN_ATOMIC_HELPER_ALL(and_fetch)
 GEN_ATOMIC_HELPER_ALL(or_fetch)
 GEN_ATOMIC_HELPER_ALL(xor_fetch)
+GEN_ATOMIC_HELPER_ALL(smin_fetch)
+GEN_ATOMIC_HELPER_ALL(umin_fetch)
+GEN_ATOMIC_HELPER_ALL(smax_fetch)
+GEN_ATOMIC_HELPER_ALL(umax_fetch)
 
 GEN_ATOMIC_HELPER_ALL(xchg)
 

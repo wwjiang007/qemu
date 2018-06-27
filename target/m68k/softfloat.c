@@ -31,13 +31,14 @@ static floatx80 propagateFloatx80NaNOneArg(floatx80 a, float_status *status)
 {
     if (floatx80_is_signaling_nan(a, status)) {
         float_raise(float_flag_invalid, status);
+        a = floatx80_silence_nan(a, status);
     }
 
     if (status->default_nan_mode) {
         return floatx80_default_nan(status);
     }
 
-    return floatx80_maybe_silence_nan(a, status);
+    return a;
 }
 
 /*----------------------------------------------------------------------------
@@ -103,6 +104,7 @@ floatx80 floatx80_mod(floatx80 a, floatx80 b, float_status *status)
         mul64To128(bSig, qTemp, &term0, &term1);
         sub128(aSig0, aSig1, term0, term1, &aSig0, &aSig1);
         shortShift128Left(aSig0, aSig1, 62, &aSig0, &aSig1);
+        expDiff -= 62;
     }
     expDiff += 64;
     if (0 < expDiff) {

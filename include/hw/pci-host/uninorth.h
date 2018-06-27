@@ -29,6 +29,9 @@
 
 #include "hw/ppc/openpic.h"
 
+/* UniNorth version */
+#define UNINORTH_VERSION_10A    0x7
+
 #define TYPE_UNI_NORTH_PCI_HOST_BRIDGE "uni-north-pci-pcihost"
 #define TYPE_UNI_NORTH_AGP_HOST_BRIDGE "uni-north-agp-pcihost"
 #define TYPE_UNI_NORTH_INTERNAL_PCI_HOST_BRIDGE "uni-north-internal-pci-pcihost"
@@ -52,5 +55,15 @@ typedef struct UNINHostState {
     MemoryRegion pci_hole;
     MemoryRegion pci_io;
 } UNINHostState;
+
+typedef struct UNINState {
+    SysBusDevice parent_obj;
+
+    MemoryRegion mem;
+} UNINState;
+
+#define TYPE_UNI_NORTH "uni-north"
+#define UNI_NORTH(obj) \
+    OBJECT_CHECK(UNINState, (obj), TYPE_UNI_NORTH)
 
 #endif /* UNINORTH_H */

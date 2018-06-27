@@ -1091,12 +1091,6 @@ struct CPUPPCState {
     target_ulong rmls;
 #endif
 
-#if defined(TARGET_PPC64) && !defined(CONFIG_USER_ONLY)
-    uint64_t vpa_addr;
-    uint64_t slb_shadow_addr, slb_shadow_size;
-    uint64_t dtl_addr, dtl_size;
-#endif /* TARGET_PPC64 */
-
     int error_code;
     uint32_t pending_interrupts;
 #if !defined(CONFIG_USER_ONLY)
@@ -1205,6 +1199,7 @@ struct PowerPCCPU {
     uint32_t compat_pvr;
     PPCVirtualHypervisor *vhyp;
     Object *intc;
+    void *machine_data;
     int32_t node_id; /* NUMA node this CPU belongs to */
     PPCHash64Options *hash64_opts;
 
@@ -1215,7 +1210,7 @@ struct PowerPCCPU {
     uint64_t mig_insns_flags2;
     uint32_t mig_nb_BATs;
     bool pre_2_10_migration;
-    bool pre_2_13_migration;
+    bool pre_3_0_migration;
     int32_t mig_slb_nr;
 };
 
@@ -1295,12 +1290,11 @@ int ppc_cpu_handle_mmu_fault(CPUState *cpu, vaddr address, int size, int rw,
 
 #if !defined(CONFIG_USER_ONLY)
 void ppc_store_sdr1 (CPUPPCState *env, target_ulong value);
+void ppc_store_ptcr(CPUPPCState *env, target_ulong value);
 #endif /* !defined(CONFIG_USER_ONLY) */
 void ppc_store_msr (CPUPPCState *env, target_ulong value);
 
 void ppc_cpu_list (FILE *f, fprintf_function cpu_fprintf);
-#if defined(TARGET_PPC64)
-#endif
 
 /* Time-base and decrementer management */
 #ifndef NO_CPU_IO_DEFS
@@ -1331,7 +1325,7 @@ void store_booke_tcr (CPUPPCState *env, target_ulong val);
 void store_booke_tsr (CPUPPCState *env, target_ulong val);
 void ppc_tlb_invalidate_all (CPUPPCState *env);
 void ppc_tlb_invalidate_one (CPUPPCState *env, target_ulong addr);
-void cpu_ppc_set_papr(PowerPCCPU *cpu, PPCVirtualHypervisor *vhyp);
+void cpu_ppc_set_vhyp(PowerPCCPU *cpu, PPCVirtualHypervisor *vhyp);
 #endif
 #endif
 
@@ -1375,7 +1369,11 @@ static inline int cpu_mmu_index (CPUPPCState *env, bool ifetch)
 #if defined(TARGET_PPC64)
 bool ppc_check_compat(PowerPCCPU *cpu, uint32_t compat_pvr,
                       uint32_t min_compat_pvr, uint32_t max_compat_pvr);
+bool ppc_type_check_compat(const char *cputype, uint32_t compat_pvr,
+                           uint32_t min_compat_pvr, uint32_t max_compat_pvr);
+
 void ppc_set_compat(PowerPCCPU *cpu, uint32_t compat_pvr, Error **errp);
+
 #if !defined(CONFIG_USER_ONLY)
 void ppc_set_compat_all(uint32_t compat_pvr, Error **errp);
 #endif
@@ -1585,6 +1583,7 @@ void ppc_compat_add_property(Object *obj, const char *name,
 #define SPR_BOOKE_GIVOR13     (0x1BC)
 #define SPR_BOOKE_GIVOR14     (0x1BD)
 #define SPR_TIR               (0x1BE)
+#define SPR_PTCR              (0x1D0)
 #define SPR_BOOKE_SPEFSCR     (0x200)
 #define SPR_Exxx_BBEAR        (0x201)
 #define SPR_Exxx_BBTAR        (0x202)

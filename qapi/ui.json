@@ -996,17 +996,6 @@
 
 
 ##
-# @DisplayNoOpts:
-#
-# Empty struct for displays without config options.
-#
-# Since: 2.12
-#
-##
-{ 'struct'  : 'DisplayNoOpts',
-  'data'    : { } }
-
-##
 # @DisplayGTK:
 #
 # GTK display options.
@@ -1031,7 +1020,7 @@
  # @core: Use OpenGL with Core (desktop) Context.
  # @es: Use OpenGL with ES (embedded systems) Context.
  #
- # Since: 2.13
+ # Since: 3.0
  #
  ##
  { 'enum'    : 'DisplayGLMode',
@@ -1068,10 +1057,4 @@
                 '*window-close'  : 'bool',
                 '*gl'            : 'DisplayGLMode' },
   'discriminator' : 'type',
-  'data'    : { 'default'        : 'DisplayNoOpts',
-                'none'           : 'DisplayNoOpts',
-                'gtk'            : 'DisplayGTK',
-                'sdl'            : 'DisplayNoOpts',
-                'egl-headless'   : 'DisplayNoOpts',
-                'curses'         : 'DisplayNoOpts',
-                'cocoa'          : 'DisplayNoOpts' } }
+  'data'    : { 'gtk'            : 'DisplayGTK' } }

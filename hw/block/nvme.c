@@ -35,6 +35,7 @@
 #include "sysemu/block-backend.h"
 
 #include "qemu/log.h"
+#include "qemu/cutils.h"
 #include "trace.h"
 #include "nvme.h"
 
@@ -1214,7 +1215,6 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
         return;
     }
 
-    blkconf_serial(&n->conf, &n->serial);
     if (!n->serial) {
         error_setg(errp, "serial property not set");
         return;

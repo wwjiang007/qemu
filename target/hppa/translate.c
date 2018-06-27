@@ -779,7 +779,7 @@ static void gen_goto_tb(DisasContext *ctx, int which,
         tcg_gen_goto_tb(which);
         tcg_gen_movi_reg(cpu_iaoq_f, f);
         tcg_gen_movi_reg(cpu_iaoq_b, b);
-        tcg_gen_exit_tb((uintptr_t)ctx->base.tb + which);
+        tcg_gen_exit_tb(ctx->base.tb, which);
     } else {
         copy_iaoq_entry(cpu_iaoq_f, f, cpu_iaoq_b);
         copy_iaoq_entry(cpu_iaoq_b, b, ctx->iaoq_n_var);
@@ -2303,7 +2303,7 @@ static DisasJumpType trans_rfi(DisasContext *ctx, uint32_t insn,
     if (ctx->base.singlestep_enabled) {
         gen_excp_1(EXCP_DEBUG);
     } else {
-        tcg_gen_exit_tb(0);
+        tcg_gen_exit_tb(NULL, 0);
     }
 
     /* Exit the TB to recognize new interrupts.  */
@@ -4669,8 +4669,7 @@ static DisasJumpType translate_one(DisasContext *ctx, uint32_t insn)
     return gen_illegal(ctx);
 }
 
-static int hppa_tr_init_disas_context(DisasContextBase *dcbase,
-                                      CPUState *cs, int max_insns)
+static void hppa_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     int bound;
@@ -4700,14 +4699,12 @@ static int hppa_tr_init_disas_context(DisasContextBase *dcbase,
 
     /* Bound the number of instructions by those left on the page.  */
     bound = -(ctx->base.pc_first | TARGET_PAGE_MASK) / 4;
-    bound = MIN(max_insns, bound);
+    ctx->base.max_insns = MIN(ctx->base.max_insns, bound);
 
     ctx->ntempr = 0;
     ctx->ntempl = 0;
     memset(ctx->tempr, 0, sizeof(ctx->tempr));
     memset(ctx->templ, 0, sizeof(ctx->templ));
-
-    return bound;
 }
 
 static void hppa_tr_tb_start(DisasContextBase *dcbase, CPUState *cs)
@@ -4847,7 +4844,7 @@ static void hppa_tr_tb_stop(DisasContextBase *dcbase, CPUState *cs)
         if (ctx->base.singlestep_enabled) {
             gen_excp_1(EXCP_DEBUG);
         } else if (is_jmp == DISAS_IAQ_N_STALE_EXIT) {
-            tcg_gen_exit_tb(0);
+            tcg_gen_exit_tb(NULL, 0);
         } else {
             tcg_gen_lookup_and_goto_ptr();
         }

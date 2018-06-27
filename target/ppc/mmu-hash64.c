@@ -431,7 +431,8 @@ const ppc_hash_pte64_t *ppc_hash64_map_hptes(PowerPCCPU *cpu,
         return NULL;
     }
 
-    hptes = address_space_map(CPU(cpu)->as, base + pte_offset, &plen, false);
+    hptes = address_space_map(CPU(cpu)->as, base + pte_offset, &plen, false,
+                              MEMTXATTRS_UNSPECIFIED);
     if (plen < (n * HASH_PTE_SIZE_64)) {
         hw_error("%s: Unable to map all requested HPTEs\n", __func__);
     }
@@ -942,7 +943,7 @@ void ppc_hash64_tlb_flush_hpte(PowerPCCPU *cpu, target_ulong ptex,
     cpu->env.tlb_need_flush = TLB_NEED_GLOBAL_FLUSH | TLB_NEED_LOCAL_FLUSH;
 }
 
-void ppc_hash64_update_rmls(PowerPCCPU *cpu)
+static void ppc_hash64_update_rmls(PowerPCCPU *cpu)
 {
     CPUPPCState *env = &cpu->env;
     uint64_t lpcr = env->spr[SPR_LPCR];
@@ -977,7 +978,7 @@ void ppc_hash64_update_rmls(PowerPCCPU *cpu)
     }
 }
 
-void ppc_hash64_update_vrma(PowerPCCPU *cpu)
+static void ppc_hash64_update_vrma(PowerPCCPU *cpu)
 {
     CPUPPCState *env = &cpu->env;
     const PPCHash64SegmentPageSizes *sps = NULL;
@@ -1028,9 +1029,9 @@ void ppc_hash64_update_vrma(PowerPCCPU *cpu)
     slb->sps = sps;
 }
 
-void helper_store_lpcr(CPUPPCState *env, target_ulong val)
+void ppc_store_lpcr(PowerPCCPU *cpu, target_ulong val)
 {
-    PowerPCCPU *cpu = ppc_env_get_cpu(env);
+    CPUPPCState *env = &cpu->env;
     uint64_t lpcr = 0;
 
     /* Filter out bits */
@@ -1096,6 +1097,13 @@ void helper_store_lpcr(CPUPPCState *env, target_ulong val)
     ppc_hash64_update_vrma(cpu);
 }
 
+void helper_store_lpcr(CPUPPCState *env, target_ulong val)
+{
+    PowerPCCPU *cpu = ppc_env_get_cpu(env);
+
+    ppc_store_lpcr(cpu, val);
+}
+
 void ppc_hash64_init(PowerPCCPU *cpu)
 {
     CPUPPCState *env = &cpu->env;
@@ -1158,3 +1166,62 @@ const PPCHash64Options ppc_hash64_opts_POWER7 = {
         },
     }
 };
+
+void ppc_hash64_filter_pagesizes(PowerPCCPU *cpu,
+                                 bool (*cb)(void *, uint32_t, uint32_t),
+                                 void *opaque)
+{
+    PPCHash64Options *opts = cpu->hash64_opts;
+    int i;
+    int n = 0;
+    bool ci_largepage = false;
+
+    assert(opts);
+
+    n = 0;
+    for (i = 0; i < ARRAY_SIZE(opts->sps); i++) {
+        PPCHash64SegmentPageSizes *sps = &opts->sps[i];
+        int j;
+        int m = 0;
+
+        assert(n <= i);
+
+        if (!sps->page_shift) {
+            break;
+        }
+
+        for (j = 0; j < ARRAY_SIZE(sps->enc); j++) {
+            PPCHash64PageSize *ps = &sps->enc[j];
+
+            assert(m <= j);
+            if (!ps->page_shift) {
+                break;
+            }
+
+            if (cb(opaque, sps->page_shift, ps->page_shift)) {
+                if (ps->page_shift >= 16) {
+                    ci_largepage = true;
+                }
+                sps->enc[m++] = *ps;
+            }
+        }
+
+        /* Clear rest of the row */
+        for (j = m; j < ARRAY_SIZE(sps->enc); j++) {
+            memset(&sps->enc[j], 0, sizeof(sps->enc[j]));
+        }
+
+        if (m) {
+            n++;
+        }
+    }
+
+    /* Clear the rest of the table */
+    for (i = n; i < ARRAY_SIZE(opts->sps); i++) {
+        memset(&opts->sps[i], 0, sizeof(opts->sps[i]));
+    }
+
+    if (!ci_largepage) {
+        opts->flags &= ~PPC_HASH64_CI_LARGEPAGE;
+    }
+}
