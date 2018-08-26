@@ -54,7 +54,6 @@
 #include "hw/ppc/spapr.h"
 #include "hw/ppc/spapr_vio.h"
 #include "hw/pci-host/spapr.h"
-#include "hw/ppc/xics.h"
 #include "hw/pci/msi.h"
 
 #include "hw/pci/pci.h"
@@ -117,33 +116,6 @@ static bool spapr_is_thread0_in_vcore(sPAPRMachineState *spapr,
     return spapr_get_vcpu_id(cpu) % spapr->vsmt == 0;
 }
 
-static ICSState *spapr_ics_create(sPAPRMachineState *spapr,
-                                  const char *type_ics,
-                                  int nr_irqs, Error **errp)
-{
-    Error *local_err = NULL;
-    Object *obj;
-
-    obj = object_new(type_ics);
-    object_property_add_child(OBJECT(spapr), "ics", obj, &error_abort);
-    object_property_add_const_link(obj, ICS_PROP_XICS, OBJECT(spapr),
-                                   &error_abort);
-    object_property_set_int(obj, nr_irqs, "nr-irqs", &local_err);
-    if (local_err) {
-        goto error;
-    }
-    object_property_set_bool(obj, true, "realized", &local_err);
-    if (local_err) {
-        goto error;
-    }
-
-    return ICS_SIMPLE(obj);
-
-error:
-    error_propagate(errp, local_err);
-    return NULL;
-}
-
 static bool pre_2_10_vmstate_dummy_icp_needed(void *opaque)
 {
     /* Dummy entries correspond to unused ICPState objects in older QEMUs,
@@ -182,38 +154,6 @@ static int xics_max_server_number(sPAPRMachineState *spapr)
 {
     assert(spapr->vsmt);
     return DIV_ROUND_UP(max_cpus * spapr->vsmt, smp_threads);
-}
-
-static void xics_system_init(MachineState *machine, int nr_irqs, Error **errp)
-{
-    sPAPRMachineState *spapr = SPAPR_MACHINE(machine);
-    Error *local_err = NULL;
-
-    if (kvm_enabled()) {
-        if (machine_kernel_irqchip_allowed(machine) &&
-            !xics_kvm_init(spapr, &local_err)) {
-            spapr->icp_type = TYPE_KVM_ICP;
-            spapr->ics = spapr_ics_create(spapr, TYPE_ICS_KVM, nr_irqs,
-                                          &local_err);
-        }
-        if (machine_kernel_irqchip_required(machine) && !spapr->ics) {
-            error_prepend(&local_err,
-                          "kernel_irqchip requested but unavailable: ");
-            goto error;
-        }
-        error_free(local_err);
-        local_err = NULL;
-    }
-
-    if (!spapr->ics) {
-        xics_spapr_init(spapr);
-        spapr->icp_type = TYPE_ICP;
-        spapr->ics = spapr_ics_create(spapr, TYPE_ICS_SIMPLE, nr_irqs,
-                                      &local_err);
-    }
-
-error:
-    error_propagate(errp, local_err);
 }
 
 static int spapr_fixup_cpu_smt_dt(void *fdt, int offset, PowerPCCPU *cpu,
@@ -622,9 +562,12 @@ static void spapr_populate_cpu_dt(CPUState *cs, void *fdt, int offset,
 
 static void spapr_populate_cpus_dt_node(void *fdt, sPAPRMachineState *spapr)
 {
+    CPUState **rev;
     CPUState *cs;
+    int n_cpus;
     int cpus_offset;
     char *nodename;
+    int i;
 
     cpus_offset = fdt_add_subnode(fdt, 0, "cpus");
     _FDT(cpus_offset);
@@ -635,8 +578,19 @@ static void spapr_populate_cpus_dt_node(void *fdt, sPAPRMachineState *spapr)
      * We walk the CPUs in reverse order to ensure that CPU DT nodes
      * created by fdt_add_subnode() end up in the right order in FDT
      * for the guest kernel the enumerate the CPUs correctly.
+     *
+     * The CPU list cannot be traversed in reverse order, so we need
+     * to do extra work.
      */
-    CPU_FOREACH_REVERSE(cs) {
+    n_cpus = 0;
+    rev = NULL;
+    CPU_FOREACH(cs) {
+        rev = g_renew(CPUState *, rev, n_cpus + 1);
+        rev[n_cpus++] = cs;
+    }
+
+    for (i = n_cpus - 1; i >= 0; i--) {
+        CPUState *cs = rev[i];
         PowerPCCPU *cpu = POWERPC_CPU(cs);
         int index = spapr_get_vcpu_id(cpu);
         DeviceClass *dc = DEVICE_GET_CLASS(cs);
@@ -665,7 +619,7 @@ static uint32_t spapr_pc_dimm_node(MemoryDeviceInfoList *list, ram_addr_t addr)
         if (value && value->type == MEMORY_DEVICE_INFO_KIND_DIMM) {
             PCDIMMDeviceInfo *pcdimm_info = value->u.dimm.data;
 
-            if (pcdimm_info->addr >= addr &&
+            if (addr >= pcdimm_info->addr &&
                 addr < (pcdimm_info->addr + pcdimm_info->size)) {
                 return pcdimm_info->node;
             }
@@ -1160,7 +1114,7 @@ static void spapr_dt_chosen(sPAPRMachineState *spapr, void *fdt)
     const char *boot_device = machine->boot_order;
     char *stdout_path = spapr_vio_stdout_path(spapr->vio_bus);
     size_t cb = 0;
-    char *bootlist = get_boot_devices_list(&cb, true);
+    char *bootlist = get_boot_devices_list(&cb);
 
     _FDT(chosen = fdt_add_subnode(fdt, 0, "chosen"));
 
@@ -1636,6 +1590,10 @@ static void spapr_machine_reset(void)
         ppc_set_compat(first_ppc_cpu, spapr->max_compat_pvr, &error_fatal);
     }
 
+    if (!SPAPR_MACHINE_GET_CLASS(spapr)->legacy_irq_allocation) {
+        spapr_irq_msi_reset(spapr);
+    }
+
     qemu_devices_reset();
 
     /* DRC reset may cause a device to be unplugged. This will cause troubles
@@ -1910,6 +1868,24 @@ static const VMStateDescription vmstate_spapr_patb_entry = {
     },
 };
 
+static bool spapr_irq_map_needed(void *opaque)
+{
+    sPAPRMachineState *spapr = opaque;
+
+    return spapr->irq_map && !bitmap_empty(spapr->irq_map, spapr->irq_map_nr);
+}
+
+static const VMStateDescription vmstate_spapr_irq_map = {
+    .name = "spapr_irq_map",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = spapr_irq_map_needed,
+    .fields = (VMStateField[]) {
+        VMSTATE_BITMAP(irq_map, sPAPRMachineState, 0, irq_map_nr),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_spapr = {
     .name = "spapr",
     .version_id = 3,
@@ -1937,6 +1913,7 @@ static const VMStateDescription vmstate_spapr = {
         &vmstate_spapr_cap_cfpc,
         &vmstate_spapr_cap_sbbc,
         &vmstate_spapr_cap_ibs,
+        &vmstate_spapr_irq_map,
         NULL
     }
 };
@@ -2322,17 +2299,17 @@ static void spapr_validate_node_memory(MachineState *machine, Error **errp)
 
     if (machine->ram_size % SPAPR_MEMORY_BLOCK_SIZE) {
         error_setg(errp, "Memory size 0x" RAM_ADDR_FMT
-                   " is not aligned to %llu MiB",
+                   " is not aligned to %" PRIu64 " MiB",
                    machine->ram_size,
-                   SPAPR_MEMORY_BLOCK_SIZE / M_BYTE);
+                   SPAPR_MEMORY_BLOCK_SIZE / MiB);
         return;
     }
 
     if (machine->maxram_size % SPAPR_MEMORY_BLOCK_SIZE) {
         error_setg(errp, "Maximum memory size 0x" RAM_ADDR_FMT
-                   " is not aligned to %llu MiB",
+                   " is not aligned to %" PRIu64 " MiB",
                    machine->ram_size,
-                   SPAPR_MEMORY_BLOCK_SIZE / M_BYTE);
+                   SPAPR_MEMORY_BLOCK_SIZE / MiB);
         return;
     }
 
@@ -2340,9 +2317,9 @@ static void spapr_validate_node_memory(MachineState *machine, Error **errp)
         if (numa_info[i].node_mem % SPAPR_MEMORY_BLOCK_SIZE) {
             error_setg(errp,
                        "Node %d memory size 0x%" PRIx64
-                       " is not aligned to %llu MiB",
+                       " is not aligned to %" PRIu64 " MiB",
                        i, numa_info[i].node_mem,
-                       SPAPR_MEMORY_BLOCK_SIZE / M_BYTE);
+                       SPAPR_MEMORY_BLOCK_SIZE / MiB);
             return;
         }
     }
@@ -2590,7 +2567,7 @@ static void spapr_machine_init(MachineState *machine)
     load_limit = MIN(spapr->rma_size, RTAS_MAX_ADDR) - FW_OVERHEAD;
 
     /* Set up Interrupt Controller before we create the VCPUs */
-    xics_system_init(machine, XICS_IRQS_SPAPR, &error_fatal);
+    smc->irq->init(spapr, &error_fatal);
 
     /* Set up containers for ibm,client-architecture-support negotiated options
      */
@@ -2763,7 +2740,7 @@ static void spapr_machine_init(MachineState *machine)
         }
     }
 
-    if (spapr->rma_size < (MIN_RMA_SLOF << 20)) {
+    if (spapr->rma_size < (MIN_RMA_SLOF * MiB)) {
         error_report(
             "pSeries SLOF firmware requires >= %ldM guest RMA (Real Mode Area memory)",
             MIN_RMA_SLOF);
@@ -3149,18 +3126,13 @@ static void spapr_memory_plug(HotplugHandler *hotplug_dev, DeviceState *dev,
     sPAPRMachineState *ms = SPAPR_MACHINE(hotplug_dev);
     PCDIMMDevice *dimm = PC_DIMM(dev);
     PCDIMMDeviceClass *ddc = PC_DIMM_GET_CLASS(dimm);
-    MemoryRegion *mr;
-    uint64_t align, size, addr;
+    MemoryRegion *mr = ddc->get_memory_region(dimm, &error_abort);
+    uint64_t size, addr;
     uint32_t node;
 
-    mr = ddc->get_memory_region(dimm, &local_err);
-    if (local_err) {
-        goto out;
-    }
-    align = memory_region_get_alignment(mr);
     size = memory_region_size(mr);
 
-    pc_dimm_memory_plug(dev, MACHINE(ms), align, &local_err);
+    pc_dimm_plug(dev, MACHINE(ms), &local_err);
     if (local_err) {
         goto out;
     }
@@ -3183,7 +3155,7 @@ static void spapr_memory_plug(HotplugHandler *hotplug_dev, DeviceState *dev,
     return;
 
 out_unplug:
-    pc_dimm_memory_unplug(dev, MACHINE(ms));
+    pc_dimm_unplug(dev, MACHINE(ms));
 out:
     error_propagate(errp, local_err);
 }
@@ -3195,6 +3167,7 @@ static void spapr_memory_pre_plug(HotplugHandler *hotplug_dev, DeviceState *dev,
     sPAPRMachineState *spapr = SPAPR_MACHINE(hotplug_dev);
     PCDIMMDevice *dimm = PC_DIMM(dev);
     PCDIMMDeviceClass *ddc = PC_DIMM_GET_CLASS(dimm);
+    Error *local_err = NULL;
     MemoryRegion *mr;
     uint64_t size;
     Object *memdev;
@@ -3213,14 +3186,20 @@ static void spapr_memory_pre_plug(HotplugHandler *hotplug_dev, DeviceState *dev,
 
     if (size % SPAPR_MEMORY_BLOCK_SIZE) {
         error_setg(errp, "Hotplugged memory size must be a multiple of "
-                      "%lld MB", SPAPR_MEMORY_BLOCK_SIZE / M_BYTE);
+                      "%" PRIu64 " MB", SPAPR_MEMORY_BLOCK_SIZE / MiB);
         return;
     }
 
     memdev = object_property_get_link(OBJECT(dimm), PC_DIMM_MEMDEV_PROP,
                                       &error_abort);
     pagesize = host_memory_backend_pagesize(MEMORY_BACKEND(memdev));
-    spapr_check_pagesize(spapr, pagesize, errp);
+    spapr_check_pagesize(spapr, pagesize, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    pc_dimm_pre_plug(dev, MACHINE(hotplug_dev), NULL, errp);
 }
 
 struct sPAPRDIMMState {
@@ -3332,7 +3311,7 @@ static void spapr_memory_unplug(HotplugHandler *hotplug_dev, DeviceState *dev)
     sPAPRMachineState *spapr = SPAPR_MACHINE(hotplug_dev);
     sPAPRDIMMState *ds = spapr_pending_dimm_unplugs_find(spapr, PC_DIMM(dev));
 
-    pc_dimm_memory_unplug(dev, MACHINE(hotplug_dev));
+    pc_dimm_unplug(dev, MACHINE(hotplug_dev));
     object_unparent(OBJECT(dev));
     spapr_pending_dimm_unplugs_remove(spapr, ds);
 }
@@ -3344,16 +3323,12 @@ static void spapr_memory_unplug_request(HotplugHandler *hotplug_dev,
     Error *local_err = NULL;
     PCDIMMDevice *dimm = PC_DIMM(dev);
     PCDIMMDeviceClass *ddc = PC_DIMM_GET_CLASS(dimm);
-    MemoryRegion *mr;
+    MemoryRegion *mr = ddc->get_memory_region(dimm, &error_abort);
     uint32_t nr_lmbs;
     uint64_t size, addr_start, addr;
     int i;
     sPAPRDRConnector *drc;
 
-    mr = ddc->get_memory_region(dimm, &local_err);
-    if (local_err) {
-        goto out;
-    }
     size = memory_region_size(mr);
     nr_lmbs = size / SPAPR_MEMORY_BLOCK_SIZE;
 
@@ -3790,121 +3765,13 @@ static ICPState *spapr_icp_get(XICSFabric *xi, int vcpu_id)
     return cpu ? ICP(cpu->intc) : NULL;
 }
 
-#define ICS_IRQ_FREE(ics, srcno)   \
-    (!((ics)->irqs[(srcno)].flags & (XICS_FLAGS_IRQ_MASK)))
-
-static int ics_find_free_block(ICSState *ics, int num, int alignnum)
-{
-    int first, i;
-
-    for (first = 0; first < ics->nr_irqs; first += alignnum) {
-        if (num > (ics->nr_irqs - first)) {
-            return -1;
-        }
-        for (i = first; i < first + num; ++i) {
-            if (!ICS_IRQ_FREE(ics, i)) {
-                break;
-            }
-        }
-        if (i == (first + num)) {
-            return first;
-        }
-    }
-
-    return -1;
-}
-
-int spapr_irq_find(sPAPRMachineState *spapr, int num, bool align, Error **errp)
-{
-    ICSState *ics = spapr->ics;
-    int first = -1;
-
-    assert(ics);
-
-    /*
-     * MSIMesage::data is used for storing VIRQ so
-     * it has to be aligned to num to support multiple
-     * MSI vectors. MSI-X is not affected by this.
-     * The hint is used for the first IRQ, the rest should
-     * be allocated continuously.
-     */
-    if (align) {
-        assert((num == 1) || (num == 2) || (num == 4) ||
-               (num == 8) || (num == 16) || (num == 32));
-        first = ics_find_free_block(ics, num, num);
-    } else {
-        first = ics_find_free_block(ics, num, 1);
-    }
-
-    if (first < 0) {
-        error_setg(errp, "can't find a free %d-IRQ block", num);
-        return -1;
-    }
-
-    return first + ics->offset;
-}
-
-int spapr_irq_claim(sPAPRMachineState *spapr, int irq, bool lsi, Error **errp)
-{
-    ICSState *ics = spapr->ics;
-
-    assert(ics);
-
-    if (!ics_valid_irq(ics, irq)) {
-        error_setg(errp, "IRQ %d is invalid", irq);
-        return -1;
-    }
-
-    if (!ICS_IRQ_FREE(ics, irq - ics->offset)) {
-        error_setg(errp, "IRQ %d is not free", irq);
-        return -1;
-    }
-
-    ics_set_irq_type(ics, irq - ics->offset, lsi);
-    return 0;
-}
-
-void spapr_irq_free(sPAPRMachineState *spapr, int irq, int num)
-{
-    ICSState *ics = spapr->ics;
-    int srcno = irq - ics->offset;
-    int i;
-
-    if (ics_valid_irq(ics, irq)) {
-        trace_spapr_irq_free(0, irq, num);
-        for (i = srcno; i < srcno + num; ++i) {
-            if (ICS_IRQ_FREE(ics, i)) {
-                trace_spapr_irq_free_warn(0, i + ics->offset);
-            }
-            memset(&ics->irqs[i], 0, sizeof(ICSIRQState));
-        }
-    }
-}
-
-qemu_irq spapr_qirq(sPAPRMachineState *spapr, int irq)
-{
-    ICSState *ics = spapr->ics;
-
-    if (ics_valid_irq(ics, irq)) {
-        return ics->qirqs[irq - ics->offset];
-    }
-
-    return NULL;
-}
-
 static void spapr_pic_print_info(InterruptStatsProvider *obj,
                                  Monitor *mon)
 {
     sPAPRMachineState *spapr = SPAPR_MACHINE(obj);
-    CPUState *cs;
+    sPAPRMachineClass *smc = SPAPR_MACHINE_GET_CLASS(spapr);
 
-    CPU_FOREACH(cs) {
-        PowerPCCPU *cpu = POWERPC_CPU(cs);
-
-        icp_pic_print_info(ICP(cpu->intc), mon);
-    }
-
-    ics_pic_print_info(spapr->ics, mon);
+    smc->irq->print_info(spapr, mon);
 }
 
 int spapr_get_vcpu_id(PowerPCCPU *cpu)
@@ -3957,6 +3824,7 @@ static void spapr_machine_class_init(ObjectClass *oc, void *data)
     InterruptStatsProviderClass *ispc = INTERRUPT_STATS_PROVIDER_CLASS(oc);
 
     mc->desc = "pSeries Logical Partition (PAPR compliant)";
+    mc->ignore_boot_device_suffixes = true;
 
     /*
      * We set up the default / latest behaviour here.  The class_init
@@ -3969,7 +3837,8 @@ static void spapr_machine_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 1024;
     mc->no_parallel = 1;
     mc->default_boot_order = "";
-    mc->default_ram_size = 512 * M_BYTE;
+    mc->default_ram_size = 512 * MiB;
+    mc->default_display = "std";
     mc->kvm_type = spapr_kvm_type;
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SPAPR_PCI_HOST_BRIDGE);
     mc->pci_allow_0_address = true;
@@ -4015,6 +3884,7 @@ static void spapr_machine_class_init(ObjectClass *oc, void *data)
     smc->default_caps.caps[SPAPR_CAP_IBS] = SPAPR_CAP_BROKEN;
     smc->default_caps.caps[SPAPR_CAP_HPT_MAXPAGESIZE] = 16; /* 64kiB */
     spapr_caps_add_properties(smc, &error_abort);
+    smc->irq = &spapr_irq_xics;
 }
 
 static const TypeInfo spapr_machine_info = {
@@ -4065,19 +3935,42 @@ static const TypeInfo spapr_machine_info = {
     }                                                                \
     type_init(spapr_machine_register_##suffix)
 
-/*
- * pseries-3.0
+ /*
+ * pseries-3.1
  */
-static void spapr_machine_3_0_instance_options(MachineState *machine)
+static void spapr_machine_3_1_instance_options(MachineState *machine)
 {
 }
 
-static void spapr_machine_3_0_class_options(MachineClass *mc)
+static void spapr_machine_3_1_class_options(MachineClass *mc)
 {
     /* Defaults for the latest behaviour inherited from the base class */
 }
 
-DEFINE_SPAPR_MACHINE(3_0, "3.0", true);
+DEFINE_SPAPR_MACHINE(3_1, "3.1", true);
+
+/*
+ * pseries-3.0
+ */
+#define SPAPR_COMPAT_3_0                                              \
+    HW_COMPAT_3_0
+
+static void spapr_machine_3_0_instance_options(MachineState *machine)
+{
+    spapr_machine_3_1_instance_options(machine);
+}
+
+static void spapr_machine_3_0_class_options(MachineClass *mc)
+{
+    sPAPRMachineClass *smc = SPAPR_MACHINE_CLASS(mc);
+
+    spapr_machine_3_1_class_options(mc);
+    SET_MACHINE_COMPAT(mc, SPAPR_COMPAT_3_0);
+
+    smc->legacy_irq_allocation = true;
+}
+
+DEFINE_SPAPR_MACHINE(3_0, "3.0", false);
 
 /*
  * pseries-2.12
@@ -4103,17 +3996,16 @@ static void spapr_machine_2_12_instance_options(MachineState *machine)
 static void spapr_machine_2_12_class_options(MachineClass *mc)
 {
     sPAPRMachineClass *smc = SPAPR_MACHINE_CLASS(mc);
-    uint8_t mps;
 
     spapr_machine_3_0_class_options(mc);
     SET_MACHINE_COMPAT(mc, SPAPR_COMPAT_2_12);
 
-    if (kvmppc_hpt_needs_host_contiguous_pages()) {
-        mps = ctz64(qemu_getrampagesize());
-    } else {
-        mps = 34; /* allow everything up to 16GiB, i.e. everything */
-    }
-    smc->default_caps.caps[SPAPR_CAP_HPT_MAXPAGESIZE] = mps;
+    /* We depend on kvm_enabled() to choose a default value for the
+     * hpt-max-page-size capability. Of course we can't do it here
+     * because this is too early and the HW accelerator isn't initialzed
+     * yet. Postpone this to machine init (see default_caps_with_cpu()).
+     */
+    smc->default_caps.caps[SPAPR_CAP_HPT_MAXPAGESIZE] = 0;
 }
 
 DEFINE_SPAPR_MACHINE(2_12, "2.12", false);

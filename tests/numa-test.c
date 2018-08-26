@@ -267,8 +267,8 @@ static void pc_dynamic_cpu_cfg(const void *data)
     QList *cpus;
     QTestState *qs;
 
-    qs = qtest_startf("%s %s", data ? (char *)data : "",
-                              "-nodefaults --preconfig -smp 2");
+    qs = qtest_initf("%s -nodefaults --preconfig -smp 2",
+                     data ? (char *)data : "");
 
     /* create 2 numa nodes */
     g_assert(!qmp_rsp_is_err(qtest_qmp(qs, "{ 'execute': 'set-numa-node',"
@@ -285,7 +285,7 @@ static void pc_dynamic_cpu_cfg(const void *data)
         " 'arguments': { 'type': 'cpu', 'node-id': 1, 'socket-id': 0 } }")));
 
     /* let machine initialization to complete and run */
-    g_assert(!qmp_rsp_is_err(qtest_qmp(qs, "{ 'execute': 'exit-preconfig' }")));
+    g_assert(!qmp_rsp_is_err(qtest_qmp(qs, "{ 'execute': 'x-exit-preconfig' }")));
     qtest_qmp_eventwait(qs, "RESUME");
 
     /* check that CPUs are mapped as expected */

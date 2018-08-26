@@ -201,7 +201,7 @@ ETEXI
 STEXI
 @item info pic
 @findex info pic
-Show i8259 (PIC) state.
+Show PIC state.
 ETEXI
 
     {
@@ -253,10 +253,11 @@ ETEXI
 
     {
         .name       = "mtree",
-        .args_type  = "flatview:-f,dispatch_tree:-d",
-        .params     = "[-f][-d]",
+        .args_type  = "flatview:-f,dispatch_tree:-d,owner:-o",
+        .params     = "[-f][-d][-o]",
         .help       = "show memory tree (-f: dump flat view for address spaces;"
-                      "-d: dump dispatch tree, valid with -f only)",
+                      "-d: dump dispatch tree, valid with -f only);"
+                      "-o: dump region owners/parents",
         .cmd        = hmp_info_mtree,
     },
 
@@ -296,6 +297,28 @@ STEXI
 @item info opcount
 @findex info opcount
 Show dynamic compiler opcode counters
+ETEXI
+
+    {
+        .name       = "sync-profile",
+        .args_type  = "mean:-m,no_coalesce:-n,max:i?",
+        .params     = "[-m] [-n] [max]",
+        .help       = "show synchronization profiling info, up to max entries "
+                      "(default: 10), sorted by total wait time. (-m: sort by "
+                      "mean wait time; -n: do not coalesce objects with the "
+                      "same call site)",
+        .cmd        = hmp_info_sync_profile,
+    },
+
+STEXI
+@item info sync-profile [-m|-n] [@var{max}]
+@findex info sync-profile
+Show synchronization profiling info, up to @var{max} entries (default: 10),
+sorted by total wait time.
+        -m: sort by mean wait time
+        -n: do not coalesce objects with the same call site
+When different objects that share the same call site are coalesced, the "Object"
+field shows---enclosed in brackets---the number of objects being coalesced.
 ETEXI
 
     {
@@ -425,6 +448,7 @@ STEXI
 Show which guest mouse is receiving events.
 ETEXI
 
+#if defined(CONFIG_VNC)
     {
         .name       = "vnc",
         .args_type  = "",
@@ -432,6 +456,7 @@ ETEXI
         .help       = "show the vnc server status",
         .cmd        = hmp_info_vnc,
     },
+#endif
 
 STEXI
 @item info vnc

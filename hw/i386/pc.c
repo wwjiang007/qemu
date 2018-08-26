@@ -23,6 +23,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "hw/hw.h"
 #include "hw/i386/pc.h"
 #include "hw/char/serial.h"
@@ -448,12 +449,12 @@ void pc_cmos_init(PCMachineState *pcms,
 
     /* memory size */
     /* base memory (first MiB) */
-    val = MIN(pcms->below_4g_mem_size / 1024, 640);
+    val = MIN(pcms->below_4g_mem_size / KiB, 640);
     rtc_set_memory(s, 0x15, val);
     rtc_set_memory(s, 0x16, val >> 8);
     /* extended memory (next 64MiB) */
-    if (pcms->below_4g_mem_size > 1024 * 1024) {
-        val = (pcms->below_4g_mem_size - 1024 * 1024) / 1024;
+    if (pcms->below_4g_mem_size > 1 * MiB) {
+        val = (pcms->below_4g_mem_size - 1 * MiB) / KiB;
     } else {
         val = 0;
     }
@@ -464,8 +465,8 @@ void pc_cmos_init(PCMachineState *pcms,
     rtc_set_memory(s, 0x30, val);
     rtc_set_memory(s, 0x31, val >> 8);
     /* memory between 16MiB and 4GiB */
-    if (pcms->below_4g_mem_size > 16 * 1024 * 1024) {
-        val = (pcms->below_4g_mem_size - 16 * 1024 * 1024) / 65536;
+    if (pcms->below_4g_mem_size > 16 * MiB) {
+        val = (pcms->below_4g_mem_size - 16 * MiB) / (64 * KiB);
     } else {
         val = 0;
     }
@@ -1392,11 +1393,11 @@ void pc_memory_init(PCMachineState *pcms,
         }
 
         machine->device_memory->base =
-            ROUND_UP(0x100000000ULL + pcms->above_4g_mem_size, 1ULL << 30);
+            ROUND_UP(0x100000000ULL + pcms->above_4g_mem_size, 1 * GiB);
 
         if (pcmc->enforce_aligned_dimm) {
             /* size device region assuming 1G page max alignment per slot */
-            device_mem_size += (1ULL << 30) * machine->ram_slots;
+            device_mem_size += (1 * GiB) * machine->ram_slots;
         }
 
         if ((machine->device_memory->base + device_mem_size) <
@@ -1438,7 +1439,7 @@ void pc_memory_init(PCMachineState *pcms,
         if (!pcmc->broken_reserved_end) {
             res_mem_end += memory_region_size(&machine->device_memory->mr);
         }
-        *val = cpu_to_le64(ROUND_UP(res_mem_end, 0x1ULL << 30));
+        *val = cpu_to_le64(ROUND_UP(res_mem_end, 1 * GiB));
         fw_cfg_add_file(fw_cfg, "etc/reserved-memory-end", val, sizeof(*val));
     }
 
@@ -1475,7 +1476,7 @@ uint64_t pc_pci_hole64_start(void)
         hole64_start = 0x100000000ULL + pcms->above_4g_mem_size;
     }
 
-    return ROUND_UP(hole64_start, 1ULL << 30);
+    return ROUND_UP(hole64_start, 1 * GiB);
 }
 
 qemu_irq pc_allocate_cpu_irq(void)
@@ -1674,27 +1675,13 @@ void ioapic_init_gsi(GSIState *gsi_state, const char *parent_name)
     }
 }
 
-static void pc_dimm_plug(HotplugHandler *hotplug_dev,
-                         DeviceState *dev, Error **errp)
+static void pc_memory_pre_plug(HotplugHandler *hotplug_dev, DeviceState *dev,
+                               Error **errp)
 {
-    HotplugHandlerClass *hhc;
-    Error *local_err = NULL;
-    PCMachineState *pcms = PC_MACHINE(hotplug_dev);
-    PCMachineClass *pcmc = PC_MACHINE_GET_CLASS(pcms);
-    PCDIMMDevice *dimm = PC_DIMM(dev);
-    PCDIMMDeviceClass *ddc = PC_DIMM_GET_CLASS(dimm);
-    MemoryRegion *mr;
-    uint64_t align = TARGET_PAGE_SIZE;
-    bool is_nvdimm = object_dynamic_cast(OBJECT(dev), TYPE_NVDIMM);
-
-    mr = ddc->get_memory_region(dimm, &local_err);
-    if (local_err) {
-        goto out;
-    }
-
-    if (memory_region_get_alignment(mr) && pcmc->enforce_aligned_dimm) {
-        align = memory_region_get_alignment(mr);
-    }
+    const PCMachineState *pcms = PC_MACHINE(hotplug_dev);
+    const PCMachineClass *pcmc = PC_MACHINE_GET_CLASS(pcms);
+    const bool is_nvdimm = object_dynamic_cast(OBJECT(dev), TYPE_NVDIMM);
+    const uint64_t legacy_align = TARGET_PAGE_SIZE;
 
     /*
      * When -no-acpi is used with Q35 machine type, no ACPI is built,
@@ -1702,18 +1689,29 @@ static void pc_dimm_plug(HotplugHandler *hotplug_dev,
      * addition to cover this case.
      */
     if (!pcms->acpi_dev || !acpi_enabled) {
-        error_setg(&local_err,
+        error_setg(errp,
                    "memory hotplug is not enabled: missing acpi device or acpi disabled");
-        goto out;
+        return;
     }
 
     if (is_nvdimm && !pcms->acpi_nvdimm_state.is_enabled) {
-        error_setg(&local_err,
-                   "nvdimm is not enabled: missing 'nvdimm' in '-M'");
-        goto out;
+        error_setg(errp, "nvdimm is not enabled: missing 'nvdimm' in '-M'");
+        return;
     }
 
-    pc_dimm_memory_plug(dev, MACHINE(pcms), align, &local_err);
+    pc_dimm_pre_plug(dev, MACHINE(hotplug_dev),
+                     pcmc->enforce_aligned_dimm ? NULL : &legacy_align, errp);
+}
+
+static void pc_memory_plug(HotplugHandler *hotplug_dev,
+                           DeviceState *dev, Error **errp)
+{
+    HotplugHandlerClass *hhc;
+    Error *local_err = NULL;
+    PCMachineState *pcms = PC_MACHINE(hotplug_dev);
+    bool is_nvdimm = object_dynamic_cast(OBJECT(dev), TYPE_NVDIMM);
+
+    pc_dimm_plug(dev, MACHINE(pcms), &local_err);
     if (local_err) {
         goto out;
     }
@@ -1728,8 +1726,8 @@ out:
     error_propagate(errp, local_err);
 }
 
-static void pc_dimm_unplug_request(HotplugHandler *hotplug_dev,
-                                   DeviceState *dev, Error **errp)
+static void pc_memory_unplug_request(HotplugHandler *hotplug_dev,
+                                     DeviceState *dev, Error **errp)
 {
     HotplugHandlerClass *hhc;
     Error *local_err = NULL;
@@ -1759,8 +1757,8 @@ out:
     error_propagate(errp, local_err);
 }
 
-static void pc_dimm_unplug(HotplugHandler *hotplug_dev,
-                           DeviceState *dev, Error **errp)
+static void pc_memory_unplug(HotplugHandler *hotplug_dev,
+                             DeviceState *dev, Error **errp)
 {
     PCMachineState *pcms = PC_MACHINE(hotplug_dev);
     HotplugHandlerClass *hhc;
@@ -1773,7 +1771,7 @@ static void pc_dimm_unplug(HotplugHandler *hotplug_dev,
         goto out;
     }
 
-    pc_dimm_memory_unplug(dev, MACHINE(pcms));
+    pc_dimm_unplug(dev, MACHINE(pcms));
     object_unparent(OBJECT(dev));
 
  out:
@@ -1997,6 +1995,11 @@ static void pc_cpu_pre_plug(HotplugHandler *hotplug_dev,
     }
     cpu->thread_id = topo.smt_id;
 
+    if (cpu->hyperv_vpindex && !kvm_hv_vpindex_settable()) {
+        error_setg(errp, "kernel doesn't allow setting HyperV VP_INDEX");
+        return;
+    }
+
     cs = CPU(cpu);
     cs->cpu_index = idx;
 
@@ -2006,7 +2009,9 @@ static void pc_cpu_pre_plug(HotplugHandler *hotplug_dev,
 static void pc_machine_device_pre_plug_cb(HotplugHandler *hotplug_dev,
                                           DeviceState *dev, Error **errp)
 {
-    if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
+    if (object_dynamic_cast(OBJECT(dev), TYPE_PC_DIMM)) {
+        pc_memory_pre_plug(hotplug_dev, dev, errp);
+    } else if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
         pc_cpu_pre_plug(hotplug_dev, dev, errp);
     }
 }
@@ -2015,7 +2020,7 @@ static void pc_machine_device_plug_cb(HotplugHandler *hotplug_dev,
                                       DeviceState *dev, Error **errp)
 {
     if (object_dynamic_cast(OBJECT(dev), TYPE_PC_DIMM)) {
-        pc_dimm_plug(hotplug_dev, dev, errp);
+        pc_memory_plug(hotplug_dev, dev, errp);
     } else if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
         pc_cpu_plug(hotplug_dev, dev, errp);
     }
@@ -2025,7 +2030,7 @@ static void pc_machine_device_unplug_request_cb(HotplugHandler *hotplug_dev,
                                                 DeviceState *dev, Error **errp)
 {
     if (object_dynamic_cast(OBJECT(dev), TYPE_PC_DIMM)) {
-        pc_dimm_unplug_request(hotplug_dev, dev, errp);
+        pc_memory_unplug_request(hotplug_dev, dev, errp);
     } else if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
         pc_cpu_unplug_request_cb(hotplug_dev, dev, errp);
     } else {
@@ -2038,7 +2043,7 @@ static void pc_machine_device_unplug_cb(HotplugHandler *hotplug_dev,
                                         DeviceState *dev, Error **errp)
 {
     if (object_dynamic_cast(OBJECT(dev), TYPE_PC_DIMM)) {
-        pc_dimm_unplug(hotplug_dev, dev, errp);
+        pc_memory_unplug(hotplug_dev, dev, errp);
     } else if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
         pc_cpu_unplug_cb(hotplug_dev, dev, errp);
     } else {
@@ -2092,7 +2097,7 @@ static void pc_machine_set_max_ram_below_4g(Object *obj, Visitor *v,
         error_propagate(errp, error);
         return;
     }
-    if (value > (1ULL << 32)) {
+    if (value > 4 * GiB) {
         error_setg(&error,
                    "Machine option 'max-ram-below-4g=%"PRIu64
                    "' expects size less than or equal to 4G", value);
@@ -2100,7 +2105,7 @@ static void pc_machine_set_max_ram_below_4g(Object *obj, Visitor *v,
         return;
     }
 
-    if (value < (1ULL << 20)) {
+    if (value < 1 * MiB) {
         warn_report("Only %" PRIu64 " bytes of RAM below the 4GiB boundary,"
                     "BIOS may not work with less than 1MiB", value);
     }

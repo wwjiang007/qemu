@@ -1,12 +1,13 @@
 #ifndef HW_SPAPR_H
 #define HW_SPAPR_H
 
+#include "qemu/units.h"
 #include "sysemu/dma.h"
 #include "hw/boards.h"
-#include "hw/ppc/xics.h"
 #include "hw/ppc/spapr_drc.h"
 #include "hw/mem/pc-dimm.h"
 #include "hw/ppc/spapr_ovec.h"
+#include "hw/ppc/spapr_irq.h"
 
 struct VIOsPAPRBus;
 struct sPAPRPHBState;
@@ -14,6 +15,7 @@ struct sPAPRNVRAM;
 typedef struct sPAPREventLogEntry sPAPREventLogEntry;
 typedef struct sPAPREventSource sPAPREventSource;
 typedef struct sPAPRPendingHPT sPAPRPendingHPT;
+typedef struct ICSState ICSState;
 
 #define HPTE64_V_HPTE_DIRTY     0x0000000000000040ULL
 #define SPAPR_ENTRY_POINT       0x100
@@ -100,12 +102,15 @@ struct sPAPRMachineClass {
     bool dr_lmb_enabled;       /* enable dynamic-reconfig/hotplug of LMBs */
     bool use_ohci_by_default;  /* use USB-OHCI instead of XHCI */
     bool pre_2_10_has_unused_icps;
+    bool legacy_irq_allocation;
+
     void (*phb_placement)(sPAPRMachineState *spapr, uint32_t index,
                           uint64_t *buid, hwaddr *pio, 
                           hwaddr *mmio32, hwaddr *mmio64,
                           unsigned n_dma, uint32_t *liobns, Error **errp);
     sPAPRResizeHPT resize_hpt_default;
     sPAPRCapabilities default_caps;
+    sPAPRIrq *irq;
 };
 
 /**
@@ -166,6 +171,8 @@ struct sPAPRMachineState {
     char *kvm_type;
 
     const char *icp_type;
+    int32_t irq_map_nr;
+    unsigned long *irq_map;
 
     bool cmd_line_caps[SPAPR_CAP_NUM];
     sPAPRCapabilities def, eff, mig;
@@ -749,8 +756,8 @@ int spapr_rng_populate_dt(void *fdt);
  */
 #define SPAPR_MAX_RAM_SLOTS     32
 
-/* 1GB alignment for device memory region */
-#define SPAPR_DEVICE_MEM_ALIGN (1ULL << 30)
+/* 1GB alignment for hotplug memory region */
+#define SPAPR_DEVICE_MEM_ALIGN (1 * GiB)
 
 /*
  * Number of 32 bit words in each LMB list entry in ibm,dynamic-memory
@@ -773,14 +780,6 @@ void spapr_do_system_reset_on_cpu(CPUState *cs, run_on_cpu_data arg);
 int spapr_get_vcpu_id(PowerPCCPU *cpu);
 void spapr_set_vcpu_id(PowerPCCPU *cpu, int cpu_index, Error **errp);
 PowerPCCPU *spapr_find_cpu(int vcpu_id);
-
-int spapr_irq_find(sPAPRMachineState *spapr, int num, bool align,
-                   Error **errp);
-#define spapr_irq_findone(spapr, errp) spapr_irq_find(spapr, 1, false, errp)
-int spapr_irq_claim(sPAPRMachineState *spapr, int irq, bool lsi, Error **errp);
-void spapr_irq_free(sPAPRMachineState *spapr, int irq, int num);
-qemu_irq spapr_qirq(sPAPRMachineState *spapr, int irq);
-
 
 int spapr_caps_pre_load(void *opaque);
 int spapr_caps_pre_save(void *opaque);

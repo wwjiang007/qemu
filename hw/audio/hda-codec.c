@@ -18,7 +18,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/atomic.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "intel-hda.h"
@@ -190,7 +189,7 @@ struct HDAAudioState {
 
 static inline int64_t hda_bytes_per_second(HDAAudioStream *st)
 {
-    return 2 * st->as.nchannels * st->as.freq;
+    return 2LL * st->as.nchannels * st->as.freq;
 }
 
 static inline void hda_timer_sync_adjust(HDAAudioStream *st, int64_t target_pos)
@@ -204,12 +203,15 @@ static inline void hda_timer_sync_adjust(HDAAudioStream *st, int64_t target_pos)
     if (target_pos < -limit) {
         corr = -HDA_TIMER_TICKS;
     }
+    if (target_pos < -(2 * limit)) {
+        corr = -(4 * HDA_TIMER_TICKS);
+    }
     if (corr == 0) {
         return;
     }
 
     trace_hda_audio_adjust(st->node->name, target_pos);
-    atomic_fetch_add(&st->buft_start, corr);
+    st->buft_start += corr;
 }
 
 static void hda_audio_input_timer(void *opaque)
@@ -218,9 +220,9 @@ static void hda_audio_input_timer(void *opaque)
 
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    int64_t buft_start = atomic_fetch_add(&st->buft_start, 0);
-    int64_t wpos = atomic_fetch_add(&st->wpos, 0);
-    int64_t rpos = atomic_fetch_add(&st->rpos, 0);
+    int64_t buft_start = st->buft_start;
+    int64_t wpos = st->wpos;
+    int64_t rpos = st->rpos;
 
     int64_t wanted_rpos = hda_bytes_per_second(st) * (now - buft_start)
                           / NANOSECONDS_PER_SECOND;
@@ -242,7 +244,7 @@ static void hda_audio_input_timer(void *opaque)
         }
         rpos += chunk;
         to_transfer -= chunk;
-        atomic_fetch_add(&st->rpos, chunk);
+        st->rpos += chunk;
     }
 
 out_timer:
@@ -256,8 +258,8 @@ static void hda_audio_input_cb(void *opaque, int avail)
 {
     HDAAudioStream *st = opaque;
 
-    int64_t wpos = atomic_fetch_add(&st->wpos, 0);
-    int64_t rpos = atomic_fetch_add(&st->rpos, 0);
+    int64_t wpos = st->wpos;
+    int64_t rpos = st->rpos;
 
     int64_t to_transfer = audio_MIN(B_SIZE - (wpos - rpos), avail);
 
@@ -269,7 +271,7 @@ static void hda_audio_input_cb(void *opaque, int avail)
         uint32_t read = AUD_read(st->voice.in, st->buf + start, chunk);
         wpos += read;
         to_transfer -= read;
-        atomic_fetch_add(&st->wpos, read);
+        st->wpos += read;
         if (chunk != read) {
             break;
         }
@@ -282,9 +284,9 @@ static void hda_audio_output_timer(void *opaque)
 
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    int64_t buft_start = atomic_fetch_add(&st->buft_start, 0);
-    int64_t wpos = atomic_fetch_add(&st->wpos, 0);
-    int64_t rpos = atomic_fetch_add(&st->rpos, 0);
+    int64_t buft_start = st->buft_start;
+    int64_t wpos = st->wpos;
+    int64_t rpos = st->rpos;
 
     int64_t wanted_wpos = hda_bytes_per_second(st) * (now - buft_start)
                           / NANOSECONDS_PER_SECOND;
@@ -306,7 +308,7 @@ static void hda_audio_output_timer(void *opaque)
         }
         wpos += chunk;
         to_transfer -= chunk;
-        atomic_fetch_add(&st->wpos, chunk);
+        st->wpos += chunk;
     }
 
 out_timer:
@@ -320,8 +322,8 @@ static void hda_audio_output_cb(void *opaque, int avail)
 {
     HDAAudioStream *st = opaque;
 
-    int64_t wpos = atomic_fetch_add(&st->wpos, 0);
-    int64_t rpos = atomic_fetch_add(&st->rpos, 0);
+    int64_t wpos = st->wpos;
+    int64_t rpos = st->rpos;
 
     int64_t to_transfer = audio_MIN(wpos - rpos, avail);
 
@@ -342,7 +344,7 @@ static void hda_audio_output_cb(void *opaque, int avail)
         uint32_t written = AUD_write(st->voice.out, st->buf + start, chunk);
         rpos += written;
         to_transfer -= written;
-        atomic_fetch_add(&st->rpos, written);
+        st->rpos += written;
         if (chunk != written) {
             break;
         }
@@ -784,7 +786,7 @@ static void hda_audio_reset(DeviceState *dev)
 static bool vmstate_hda_audio_stream_buf_needed(void *opaque)
 {
     HDAAudioStream *st = opaque;
-    return st->state->use_timer;
+    return st->state && st->state->use_timer;
 }
 
 static const VMStateDescription vmstate_hda_audio_stream_buf = {

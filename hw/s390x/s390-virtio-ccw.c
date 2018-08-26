@@ -35,6 +35,7 @@
 #include "migration/register.h"
 #include "cpu_models.h"
 #include "hw/nmi.h"
+#include "hw/s390x/tod.h"
 
 S390CPU *s390_cpu_addr2state(uint16_t cpu_addr)
 {
@@ -187,58 +188,6 @@ static void s390_memory_init(ram_addr_t mem_size)
     s390_stattrib_init();
 }
 
-#define S390_TOD_CLOCK_VALUE_MISSING    0x00
-#define S390_TOD_CLOCK_VALUE_PRESENT    0x01
-
-static void gtod_save(QEMUFile *f, void *opaque)
-{
-    uint64_t tod_low;
-    uint8_t tod_high;
-    int r;
-
-    r = s390_get_clock(&tod_high, &tod_low);
-    if (r) {
-        warn_report("Unable to get guest clock for migration: %s",
-                    strerror(-r));
-        error_printf("Guest clock will not be migrated "
-                     "which could cause the guest to hang.");
-        qemu_put_byte(f, S390_TOD_CLOCK_VALUE_MISSING);
-        return;
-    }
-
-    qemu_put_byte(f, S390_TOD_CLOCK_VALUE_PRESENT);
-    qemu_put_byte(f, tod_high);
-    qemu_put_be64(f, tod_low);
-}
-
-static int gtod_load(QEMUFile *f, void *opaque, int version_id)
-{
-    uint64_t tod_low;
-    uint8_t tod_high;
-    int r;
-
-    if (qemu_get_byte(f) == S390_TOD_CLOCK_VALUE_MISSING) {
-        warn_report("Guest clock was not migrated. This could "
-                    "cause the guest to hang.");
-        return 0;
-    }
-
-    tod_high = qemu_get_byte(f);
-    tod_low = qemu_get_be64(f);
-
-    r = s390_set_clock(&tod_high, &tod_low);
-    if (r) {
-        error_report("Unable to set KVM guest TOD clock: %s", strerror(-r));
-    }
-
-    return r;
-}
-
-static SaveVMHandlers savevm_gtod = {
-    .save_state = gtod_save,
-    .load_state = gtod_load,
-};
-
 static void s390_init_ipl_dev(const char *kernel_filename,
                               const char *kernel_cmdline,
                               const char *initrd_filename, const char *firmware,
@@ -333,19 +282,8 @@ static void ccw_init(MachineState *machine)
     virtio_ccw_register_hcalls();
 
     s390_enable_css_support(s390_cpu_addr2state(0));
-    /*
-     * Non mcss-e enabled guests only see the devices from the default
-     * css, which is determined by the value of the squash_mcss property.
-     */
-    if (css_bus->squash_mcss) {
-        ret = css_create_css_image(0, true);
-    } else {
-        ret = css_create_css_image(VIRTUAL_CSSID, true);
-    }
-    if (qemu_opt_get(qemu_get_machine_opts(), "s390-squash-mcss")) {
-        warn_report("The machine property 's390-squash-mcss' is deprecated"
-                    " (obsoleted by lifting the cssid restrictions).");
-    }
+
+    ret = css_create_css_image(VIRTUAL_CSSID, true);
 
     assert(ret == 0);
     if (css_migration_enabled()) {
@@ -363,8 +301,8 @@ static void ccw_init(MachineState *machine)
         s390_create_sclpconsole("sclplmconsole", serial_hd(1));
     }
 
-    /* Register savevm handler for guest TOD clock */
-    register_savevm_live(NULL, "todclock", 0, 1, &savevm_gtod, NULL);
+    /* init the TOD clock */
+    s390_init_tod();
 }
 
 static void s390_cpu_plug(HotplugHandler *hotplug_dev,
@@ -626,21 +564,6 @@ static void machine_set_loadparm(Object *obj, const char *val, Error **errp)
         ms->loadparm[i] = ' '; /* pad right with spaces */
     }
 }
-static inline bool machine_get_squash_mcss(Object *obj, Error **errp)
-{
-    S390CcwMachineState *ms = S390_CCW_MACHINE(obj);
-
-    return ms->s390_squash_mcss;
-}
-
-static inline void machine_set_squash_mcss(Object *obj, bool value,
-                                           Error **errp)
-{
-    S390CcwMachineState *ms = S390_CCW_MACHINE(obj);
-
-    ms->s390_squash_mcss = value;
-}
-
 static inline void s390_machine_initfn(Object *obj)
 {
     object_property_add_bool(obj, "aes-key-wrap",
@@ -665,13 +588,6 @@ static inline void s390_machine_initfn(Object *obj)
             " to upper case) to pass to machine loader, boot manager,"
             " and guest kernel",
             NULL);
-    object_property_add_bool(obj, "s390-squash-mcss",
-                             machine_get_squash_mcss,
-                             machine_set_squash_mcss, NULL);
-    object_property_set_description(obj, "s390-squash-mcss", "(deprecated) "
-            "enable/disable squashing subchannels into the default css",
-            NULL);
-    object_property_set_bool(obj, false, "s390-squash-mcss", NULL);
 }
 
 static const TypeInfo ccw_machine_info = {
@@ -723,6 +639,9 @@ bool css_migration_enabled(void)
         type_register_static(&ccw_machine_##suffix##_info);                   \
     }                                                                         \
     type_init(ccw_machine_register_##suffix)
+
+#define CCW_COMPAT_3_0 \
+        HW_COMPAT_3_0
 
 #define CCW_COMPAT_2_12 \
         HW_COMPAT_2_12
@@ -812,18 +731,32 @@ bool css_migration_enabled(void)
             .value    = "0",\
         },
 
+static void ccw_machine_3_1_instance_options(MachineState *machine)
+{
+}
+
+static void ccw_machine_3_1_class_options(MachineClass *mc)
+{
+}
+DEFINE_CCW_MACHINE(3_1, "3.1", true);
+
 static void ccw_machine_3_0_instance_options(MachineState *machine)
 {
+    ccw_machine_3_1_instance_options(machine);
 }
 
 static void ccw_machine_3_0_class_options(MachineClass *mc)
 {
+    ccw_machine_3_1_class_options(mc);
+    SET_MACHINE_COMPAT(mc, CCW_COMPAT_3_0);
 }
-DEFINE_CCW_MACHINE(3_0, "3.0", true);
+DEFINE_CCW_MACHINE(3_0, "3.0", false);
 
 static void ccw_machine_2_12_instance_options(MachineState *machine)
 {
     ccw_machine_3_0_instance_options(machine);
+    s390_cpudef_featoff_greater(11, 1, S390_FEAT_PPA15);
+    s390_cpudef_featoff_greater(11, 1, S390_FEAT_BPB);
 }
 
 static void ccw_machine_2_12_class_options(MachineClass *mc)

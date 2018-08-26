@@ -479,7 +479,7 @@ static void allocate_system_memory_nonnuma(MemoryRegion *mr, Object *owner,
     if (mem_path) {
 #ifdef __linux__
         Error *err = NULL;
-        memory_region_init_ram_from_file(mr, owner, name, ram_size, 0, false,
+        memory_region_init_ram_from_file(mr, owner, name, ram_size, 0, 0,
                                          mem_path, &err);
         if (err) {
             error_report_err(err);
@@ -523,8 +523,7 @@ void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
         if (!backend) {
             continue;
         }
-        MemoryRegion *seg = host_memory_backend_get_memory(backend,
-                                                           &error_fatal);
+        MemoryRegion *seg = host_memory_backend_get_memory(backend);
 
         if (memory_region_is_mapped(seg)) {
             char *path = object_get_canonical_path_component(OBJECT(backend));
@@ -567,10 +566,8 @@ static void numa_stat_memory_devices(NumaNodeMem node_mem[])
 
             if (pcdimm_info) {
                 node_mem[pcdimm_info->node].node_mem += pcdimm_info->size;
-                if (pcdimm_info->hotpluggable && pcdimm_info->hotplugged) {
-                    node_mem[pcdimm_info->node].node_plugged_mem +=
-                        pcdimm_info->size;
-                }
+                node_mem[pcdimm_info->node].node_plugged_mem +=
+                    pcdimm_info->size;
             }
         }
     }

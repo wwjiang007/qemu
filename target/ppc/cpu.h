@@ -196,7 +196,6 @@ enum {
     /* QEMU exceptions: special cases we want to stop translation            */
     POWERPC_EXCP_SYNC         = 0x202, /* context synchronizing instruction  */
     POWERPC_EXCP_SYSCALL_USER = 0x203, /* System call in user mode only      */
-    POWERPC_EXCP_STCX         = 0x204 /* Conditional stores in user mode     */
 };
 
 /* Exceptions error codes                                                    */
@@ -481,6 +480,11 @@ struct ppc_slb_t {
 #define msr_le   ((env->msr >> MSR_LE)   & 1)
 #define msr_ts   ((env->msr >> MSR_TS1)  & 3)
 #define msr_tm   ((env->msr >> MSR_TM)   & 1)
+
+#define DBCR0_ICMP (1 << 27)
+#define DBCR0_BRT (1 << 26)
+#define DBSR_ICMP (1 << 27)
+#define DBSR_BRT (1 << 26)
 
 /* Hypervisor bit is more specific */
 #if defined(TARGET_PPC64)
@@ -994,10 +998,6 @@ struct CPUPPCState {
     /* Reservation value */
     target_ulong reserve_val;
     target_ulong reserve_val2;
-    /* Reservation store address */
-    target_ulong reserve_ea;
-    /* Reserved store source register and size */
-    target_ulong reserve_info;
 
     /* Those ones are used in supervisor mode only */
     /* machine state register */
@@ -1014,6 +1014,9 @@ struct CPUPPCState {
 
     /* Next instruction pointer */
     target_ulong nip;
+
+    /* High part of 128-bit helper return.  */
+    uint64_t retxh;
 
     int access_type; /* when a memory exception occurs, the access
                         type is stored here */

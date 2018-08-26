@@ -97,7 +97,7 @@ static void qdict_flatten_qdict(QDict *qdict, QDict *target, const char *prefix)
     const QDictEntry *entry, *next;
     QDict *dict_val;
     QList *list_val;
-    char *new_key;
+    char *key, *new_key;
 
     entry = qdict_first(qdict);
 
@@ -106,10 +106,12 @@ static void qdict_flatten_qdict(QDict *qdict, QDict *target, const char *prefix)
         value = qdict_entry_value(entry);
         dict_val = qobject_to(QDict, value);
         list_val = qobject_to(QList, value);
-        new_key = NULL;
 
         if (prefix) {
-            new_key = g_strdup_printf("%s.%s", prefix, entry->key);
+            key = new_key = g_strdup_printf("%s.%s", prefix, entry->key);
+        } else {
+            key = entry->key;
+            new_key = NULL;
         }
 
         /*
@@ -125,19 +127,17 @@ static void qdict_flatten_qdict(QDict *qdict, QDict *target, const char *prefix)
          * well advised not to modify them altogether.)
          */
         if (dict_val && qdict_size(dict_val)) {
-            qdict_flatten_qdict(dict_val, target,
-                                new_key ? new_key : entry->key);
+            qdict_flatten_qdict(dict_val, target, key);
             if (target == qdict) {
                 qdict_del(qdict, entry->key);
             }
         } else if (list_val && !qlist_empty(list_val)) {
-            qdict_flatten_qlist(list_val, target,
-                                new_key ? new_key : entry->key);
+            qdict_flatten_qlist(list_val, target, key);
             if (target == qdict) {
                 qdict_del(qdict, entry->key);
             }
         } else if (target != qdict) {
-            qdict_put_obj(target, new_key, qobject_ref(value));
+            qdict_put_obj(target, key, qobject_ref(value));
         }
 
         g_free(new_key);
@@ -158,20 +158,25 @@ void qdict_flatten(QDict *qdict)
     qdict_flatten_qdict(qdict, qdict, NULL);
 }
 
-/* extract all the src QDict entries starting by start into dst */
+/* extract all the src QDict entries starting by start into dst.
+ * If dst is NULL then the entries are simply removed from src. */
 void qdict_extract_subqdict(QDict *src, QDict **dst, const char *start)
 
 {
     const QDictEntry *entry, *next;
     const char *p;
 
-    *dst = qdict_new();
+    if (dst) {
+        *dst = qdict_new();
+    }
     entry = qdict_first(src);
 
     while (entry != NULL) {
         next = qdict_next(src, entry);
         if (strstart(entry->key, start, &p)) {
-            qdict_put_obj(*dst, p, qobject_ref(entry->value));
+            if (dst) {
+                qdict_put_obj(*dst, p, qobject_ref(entry->value));
+            }
             qdict_del(src, entry->key);
         }
         entry = next;

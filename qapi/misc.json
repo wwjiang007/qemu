@@ -46,7 +46,7 @@
 # Enumeration of capabilities to be advertised during initial client
 # connection, used for agreeing on particular QMP extension behaviors.
 #
-# @oob:   QMP ability to support Out-Of-Band requests.
+# @oob:   QMP ability to support out-of-band requests.
 #         (Please refer to qmp-spec.txt for more information on OOB)
 #
 # Since: 2.12
@@ -1205,7 +1205,7 @@
 { 'command': 'cont' }
 
 ##
-# @exit-preconfig:
+# @x-exit-preconfig:
 #
 # Exit from "preconfig" state
 #
@@ -1221,11 +1221,11 @@
 #
 # Example:
 #
-# -> { "execute": "exit-preconfig" }
+# -> { "execute": "x-exit-preconfig" }
 # <- { "return": {} }
 #
 ##
-{ 'command': 'exit-preconfig', 'allow-preconfig': true }
+{ 'command': 'x-exit-preconfig', 'allow-preconfig': true }
 
 ##
 # @system_wakeup:
@@ -1677,10 +1677,13 @@
 #
 # @kdump-snappy: kdump-compressed format with snappy-compressed
 #
+# @win-dmp: Windows full crashdump format,
+#           can be used instead of ELF converting (since 2.13)
+#
 # Since: 2.0
 ##
 { 'enum': 'DumpGuestMemoryFormat',
-  'data': [ 'elf', 'kdump-zlib', 'kdump-lzo', 'kdump-snappy' ] }
+  'data': [ 'elf', 'kdump-zlib', 'kdump-lzo', 'kdump-snappy', 'win-dmp' ] }
 
 ##
 # @dump-guest-memory:
@@ -3451,6 +3454,9 @@
 # only be dropped when the oob capability is enabled.
 #
 # @id: The dropped command's "id" field.
+# FIXME Broken by design.  Events are broadcast to all monitors.  If
+# another monitor's client has a command with the same ID in flight,
+# the event will incorrectly claim that command was dropped.
 #
 # @reason: The reason why the command is dropped.
 #
@@ -3465,24 +3471,6 @@
 ##
 { 'event': 'COMMAND_DROPPED' ,
   'data': { 'id': 'any', 'reason': 'CommandDropReason' } }
-
-##
-# @x-oob-test:
-#
-# Test OOB functionality.  When sending this command with lock=true,
-# it'll try to hang the dispatcher.  When sending it with lock=false,
-# it'll try to notify the locked thread to continue.  Note: it should
-# only be used by QMP test program rather than anything else.
-#
-# Since: 2.12
-#
-# Example:
-#
-# { "execute": "x-oob-test",
-#   "arguments": { "lock": true } }
-##
-{ 'command': 'x-oob-test', 'data' : { 'lock': 'bool' },
-  'allow-oob': true }
 
 ##
 # @set-numa-node:

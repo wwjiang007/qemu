@@ -500,13 +500,27 @@ static int cleanup_range(const char *block_name, void *host_addr,
  * postcopy later; must be called prior to any precopy.
  * called from arch_init's similarly named ram_postcopy_incoming_init
  */
-int postcopy_ram_incoming_init(MigrationIncomingState *mis, size_t ram_pages)
+int postcopy_ram_incoming_init(MigrationIncomingState *mis)
 {
     if (qemu_ram_foreach_migratable_block(init_range, NULL)) {
         return -1;
     }
 
     return 0;
+}
+
+/*
+ * Manage a single vote to the QEMU balloon inhibitor for all postcopy usage,
+ * last caller wins.
+ */
+static void postcopy_balloon_inhibit(bool state)
+{
+    static bool cur_state = false;
+
+    if (state != cur_state) {
+        qemu_balloon_inhibit(state);
+        cur_state = state;
+    }
 }
 
 /*
@@ -539,7 +553,7 @@ int postcopy_ram_incoming_cleanup(MigrationIncomingState *mis)
         mis->have_fault_thread = false;
     }
 
-    qemu_balloon_inhibit(false);
+    postcopy_balloon_inhibit(false);
 
     if (enable_mlock) {
         if (os_mlock() < 0) {
@@ -853,6 +867,7 @@ static void *postcopy_ram_fault_thread(void *opaque)
     RAMBlock *rb = NULL;
 
     trace_postcopy_ram_fault_thread_entry();
+    rcu_register_thread();
     mis->last_rb = NULL; /* last RAMBlock we sent part of */
     qemu_sem_post(&mis->fault_thread_sem);
 
@@ -1059,6 +1074,7 @@ retry:
             }
         }
     }
+    rcu_unregister_thread();
     trace_postcopy_ram_fault_thread_exit();
     g_free(pfd);
     return NULL;
@@ -1107,7 +1123,7 @@ int postcopy_ram_enable_notify(MigrationIncomingState *mis)
      * Ballooning can mark pages as absent while we're postcopying
      * that would cause false userfaults.
      */
-    qemu_balloon_inhibit(true);
+    postcopy_balloon_inhibit(true);
 
     trace_postcopy_ram_enable_notify();
 
@@ -1265,7 +1281,7 @@ bool postcopy_ram_supported_by_host(MigrationIncomingState *mis)
     return false;
 }
 
-int postcopy_ram_incoming_init(MigrationIncomingState *mis, size_t ram_pages)
+int postcopy_ram_incoming_init(MigrationIncomingState *mis)
 {
     error_report("postcopy_ram_incoming_init: No OS support");
     return -1;

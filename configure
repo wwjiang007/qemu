@@ -300,6 +300,24 @@ then
 else
     git_update=no
     git_submodules=""
+
+    if ! test -f "$source_path/ui/keycodemapdb/README"
+    then
+        echo
+        echo "ERROR: missing file $source_path/ui/keycodemapdb/README"
+        echo
+        echo "This is not a GIT checkout but module content appears to"
+        echo "be missing. Do not use 'git archive' or GitHub download links"
+        echo "to acquire QEMU source archives. Non-GIT builds are only"
+        echo "supported with source archives linked from:"
+        echo
+        echo "  https://www.qemu.org/download/"
+        echo
+        echo "Developers working with GIT can use scripts/archive-source.sh"
+        echo "if they need to create valid source archives."
+        echo
+        exit 1
+    fi
 fi
 git="git"
 
@@ -357,6 +375,7 @@ hax="no"
 hvf="no"
 whpx="no"
 rdma=""
+pvrdma=""
 gprof="no"
 debug_tcg="no"
 debug="no"
@@ -456,6 +475,8 @@ replication="yes"
 vxhs=""
 libxml2=""
 docker="no"
+debug_mutex="no"
+libpmem=""
 
 # cross compilers defaults, can be overridden with --cross-cc-ARCH
 cross_cc_aarch64="aarch64-linux-gnu-gcc"
@@ -1041,6 +1062,7 @@ for opt do
   --enable-debug)
       # Enable debugging options that aren't excessively noisy
       debug_tcg="yes"
+      debug_mutex="yes"
       debug="yes"
       strip_opt="no"
       fortify_source="no"
@@ -1343,6 +1365,10 @@ for opt do
   ;;
   --disable-rdma) rdma="no"
   ;;
+  --enable-pvrdma) pvrdma="yes"
+  ;;
+  --disable-pvrdma) pvrdma="no"
+  ;;
   --with-gtkabi=*) gtkabi="$optarg"
   ;;
   --disable-vte) vte="no"
@@ -1410,6 +1436,14 @@ for opt do
   --enable-git-update) git_update=yes
   ;;
   --disable-git-update) git_update=no
+  ;;
+  --enable-debug-mutex) debug_mutex=yes
+  ;;
+  --disable-debug-mutex) debug_mutex=no
+  ;;
+  --enable-libpmem) libpmem=yes
+  ;;
+  --disable-libpmem) libpmem=no
   ;;
   *)
       echo "ERROR: unknown option $opt"
@@ -1645,7 +1679,8 @@ disabled with --disable-FEATURE, default is enabled if available:
   hax             HAX acceleration support
   hvf             Hypervisor.framework acceleration support
   whpx            Windows Hypervisor Platform acceleration support
-  rdma            Enable RDMA-based migration and PVRDMA support
+  rdma            Enable RDMA-based migration
+  pvrdma          Enable PVRDMA support
   vde             support for vde network
   netmap          support for netmap network
   linux-aio       Linux AIO support
@@ -1685,6 +1720,8 @@ disabled with --disable-FEATURE, default is enabled if available:
   crypto-afalg    Linux AF_ALG crypto backend driver
   vhost-user      vhost-user support
   capstone        capstone disassembler support
+  debug-mutex     mutex debugging support
+  libpmem         libpmem support
 
 NOTE: The object files are built at the place where configure is launched
 EOF
@@ -2191,13 +2228,10 @@ fi
 ##########################################
 # libseccomp check
 
+libseccomp_minver="2.2.0"
 if test "$seccomp" != "no" ; then
     case "$cpu" in
-    i386|x86_64)
-        libseccomp_minver="2.1.0"
-        ;;
-    mips)
-        libseccomp_minver="2.2.0"
+    i386|x86_64|mips)
         ;;
     arm|aarch64)
         libseccomp_minver="2.2.3"
@@ -3039,6 +3073,48 @@ EOF
   fi
 fi
 
+##########################################
+# PVRDMA detection
+
+cat > $TMPC <<EOF &&
+#include <sys/mman.h>
+
+int
+main(void)
+{
+    char buf = 0;
+    void *addr = &buf;
+    addr = mremap(addr, 0, 1, MREMAP_MAYMOVE | MREMAP_FIXED);
+
+    return 0;
+}
+EOF
+
+if test "$rdma" = "yes" ; then
+    case "$pvrdma" in
+    "")
+        if compile_prog "" ""; then
+            pvrdma="yes"
+        else
+            pvrdma="no"
+        fi
+        ;;
+    "yes")
+        if ! compile_prog "" ""; then
+            error_exit "PVRDMA is not supported since mremap is not implemented"
+        fi
+        pvrdma="yes"
+        ;;
+    "no")
+        pvrdma="no"
+        ;;
+    esac
+else
+    if test "$pvrdma" = "yes" ; then
+        error_exit "PVRDMA requires rdma suppport"
+    fi
+    pvrdma="no"
+fi
 
 ##########################################
 # VNC SASL detection
@@ -3433,11 +3509,7 @@ fi
 ##########################################
 # glib support probe
 
-if test "$mingw32" = yes; then
-    glib_req_ver=2.30
-else
-    glib_req_ver=2.22
-fi
+glib_req_ver=2.40
 glib_modules=gthread-2.0
 if test "$modules" = yes; then
     glib_modules="$glib_modules gmodule-export-2.0"
@@ -3537,6 +3609,7 @@ fi
 # libmpathpersist probe
 
 if test "$mpath" != "no" ; then
+  # probe for the new API
   cat > $TMPC <<EOF
 #include <libudev.h>
 #include <mpath_persist.h>
@@ -3558,8 +3631,26 @@ int main(void) {
 EOF
   if compile_prog "" "-ludev -lmultipath -lmpathpersist" ; then
     mpathpersist=yes
+    mpathpersist_new_api=yes
   else
-    mpathpersist=no
+    # probe for the old API
+    cat > $TMPC <<EOF
+#include <libudev.h>
+#include <mpath_persist.h>
+unsigned mpath_mx_alloc_len = 1024;
+int logsink;
+int main(void) {
+    struct udev *udev = udev_new();
+    mpath_lib_init(udev);
+    return 0;
+}
+EOF
+    if compile_prog "" "-ludev -lmultipath -lmpathpersist" ; then
+      mpathpersist=yes
+      mpathpersist_new_api=no
+    else
+      mpathpersist=no
+    fi
   fi
 else
   mpathpersist=no
@@ -3862,7 +3953,7 @@ libs_softmmu="$libs_softmmu $fdt_libs"
 # opengl probe (for sdl2, gtk, milkymist-tmu2)
 
 if test "$opengl" != "no" ; then
-  opengl_pkgs="epoxy libdrm gbm"
+  opengl_pkgs="epoxy gbm"
   if $pkg_config $opengl_pkgs; then
     opengl_cflags="$($pkg_config --cflags $opengl_pkgs)"
     opengl_libs="$($pkg_config --libs $opengl_pkgs)"
@@ -4794,6 +4885,21 @@ if compile_prog "" "" ; then
 fi
 
 ##########################################
+# check if we have strchrnul
+
+strchrnul=no
+cat > $TMPC << EOF
+#include <string.h>
+int main(void);
+// Use a haystack that the compiler shouldn't be able to constant fold
+char *haystack = (char*)&main;
+int main(void) { return strchrnul(haystack, 'x') != &haystack[6]; }
+EOF
+if compile_prog "" "" ; then
+    strchrnul=yes
+fi
+
+##########################################
 # check if trace backend exists
 
 $python "$source_path/scripts/tracetool.py" "--backends=$trace_backends" --check-backends  > /dev/null 2> /dev/null
@@ -5510,6 +5616,24 @@ if has "docker"; then
 fi
 
 ##########################################
+# check for libpmem
+
+if test "$libpmem" != "no"; then
+	if $pkg_config --exists "libpmem"; then
+		libpmem="yes"
+		libpmem_libs=$($pkg_config --libs libpmem)
+		libpmem_cflags=$($pkg_config --cflags libpmem)
+		libs_softmmu="$libs_softmmu $libpmem_libs"
+		QEMU_CFLAGS="$QEMU_CFLAGS $libpmem_cflags"
+	else
+		if test "$libpmem" = "yes" ; then
+			feature_not_found "libpmem" "Install nvml or pmdk"
+		fi
+		libpmem="no"
+	fi
+fi
+
+##########################################
 # End of CC checks
 # After here, no more $cc or $ld runs
 
@@ -5916,6 +6040,7 @@ if test "$tcg" = "yes" ; then
 fi
 echo "malloc trim support $malloc_trim"
 echo "RDMA support      $rdma"
+echo "PVRDMA support    $pvrdma"
 echo "fdt support       $fdt"
 echo "membarrier        $membarrier"
 echo "preadv support    $preadv"
@@ -5951,6 +6076,7 @@ echo "seccomp support   $seccomp"
 echo "coroutine backend $coroutine"
 echo "coroutine pool    $coroutine_pool"
 echo "debug stack usage $debug_stack_usage"
+echo "mutex debugging   $debug_mutex"
 echo "crypto afalg      $crypto_afalg"
 echo "GlusterFS support $glusterfs"
 echo "gcov              $gcov_tool"
@@ -5973,6 +6099,7 @@ echo "replication support $replication"
 echo "VxHS block device $vxhs"
 echo "capstone          $capstone"
 echo "docker            $docker"
+echo "libpmem support   $libpmem"
 
 if test "$sdl_too_old" = "yes"; then
 echo "-> Your SDL version is too old - please upgrade to have SDL support"
@@ -6175,7 +6302,7 @@ qemu_version=$(head $source_path/VERSION)
 echo "VERSION=$qemu_version" >>$config_host_mak
 echo "PKGVERSION=$pkgversion" >>$config_host_mak
 echo "SRC_PATH=$source_path" >> $config_host_mak
-echo "TARGET_LIST=$target_list" >> $config_host_mak
+echo "TARGET_DIRS=$target_list" >> $config_host_mak
 if [ "$docs" = "yes" ] ; then
   echo "BUILD_DOCS=yes" >> $config_host_mak
 fi
@@ -6276,6 +6403,9 @@ fi
 if test "$sem_timedwait" = "yes" ; then
   echo "CONFIG_SEM_TIMEDWAIT=y" >> $config_host_mak
 fi
+if test "$strchrnul" = "yes" ; then
+  echo "HAVE_STRCHRNUL=y" >> $config_host_mak
+fi
 if test "$byteswap_h" = "yes" ; then
   echo "CONFIG_BYTESWAP_H=y" >> $config_host_mak
 fi
@@ -6294,9 +6424,6 @@ fi
 if test "$bluez" = "yes" ; then
   echo "CONFIG_BLUEZ=y" >> $config_host_mak
   echo "BLUEZ_CFLAGS=$bluez_cflags" >> $config_host_mak
-fi
-if test "$glib_subprocess" = "yes" ; then
-  echo "CONFIG_HAS_GLIB_SUBPROCESS_TESTS=y" >> $config_host_mak
 fi
 if test "$gtk" = "yes" ; then
   echo "CONFIG_GTK=m" >> $config_host_mak
@@ -6381,6 +6508,9 @@ if test "$virtfs" = "yes" ; then
 fi
 if test "$mpath" = "yes" ; then
   echo "CONFIG_MPATH=y" >> $config_host_mak
+  if test "$mpathpersist_new_api" = "yes"; then
+    echo "CONFIG_MPATH_NEW_API=y" >> $config_host_mak
+  fi
 fi
 if test "$vhost_scsi" = "yes" ; then
   echo "CONFIG_VHOST_SCSI=y" >> $config_host_mak
@@ -6668,6 +6798,10 @@ if test "$rdma" = "yes" ; then
   echo "RDMA_LIBS=$rdma_libs" >> $config_host_mak
 fi
 
+if test "$pvrdma" = "yes" ; then
+  echo "CONFIG_PVRDMA=y" >> $config_host_mak
+fi
+
 if test "$have_rtnetlink" = "yes" ; then
   echo "CONFIG_RTNETLINK=y" >> $config_host_mak
 fi
@@ -6704,6 +6838,9 @@ fi
 if test "$capstone" != "no" ; then
   echo "CONFIG_CAPSTONE=y" >> $config_host_mak
 fi
+if test "$debug_mutex" = "yes" ; then
+  echo "CONFIG_DEBUG_MUTEX=y" >> $config_host_mak
+fi
 
 # Hold two types of flag:
 #   CONFIG_THREAD_SETNAME_BYTHREAD  - we've got a way of setting the name on
@@ -6718,6 +6855,10 @@ fi
 if test "$vxhs" = "yes" ; then
   echo "CONFIG_VXHS=y" >> $config_host_mak
   echo "VXHS_LIBS=$vxhs_libs" >> $config_host_mak
+fi
+
+if test "$libpmem" = "yes" ; then
+  echo "CONFIG_LIBPMEM=y" >> $config_host_mak
 fi
 
 if test "$tcg_interpreter" = "yes"; then
@@ -7338,6 +7479,10 @@ done
 for test_file in $(find $source_path/tests/acpi-test-data -type f)
 do
     FILES="$FILES tests/acpi-test-data$(echo $test_file | sed -e 's/.*acpi-test-data//')"
+done
+for test_file in $(find $source_path/tests/hex-loader-check-data -type f)
+do
+    FILES="$FILES tests/hex-loader-check-data$(echo $test_file | sed -e 's/.*hex-loader-check-data//')"
 done
 mkdir -p $DIRS
 for f in $FILES ; do

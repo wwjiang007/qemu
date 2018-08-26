@@ -46,7 +46,7 @@
 #endif
 #endif
 #else
-#include "exec/address-spaces.h"
+#include "exec/ram_addr.h"
 #endif
 
 #include "exec/cputlb.h"
@@ -191,7 +191,7 @@ struct page_collection {
 
 /* Make sure all possible CPU event bits fit in tb->trace_vcpu_dstate */
 QEMU_BUILD_BUG_ON(CPU_TRACE_DSTATE_MAX_EVENTS >
-                  sizeof(((TranslationBlock *)0)->trace_vcpu_dstate)
+                  sizeof_field(TranslationBlock, trace_vcpu_dstate)
                   * BITS_PER_BYTE);
 
 /*
@@ -669,9 +669,15 @@ static inline void page_lock_tb(const TranslationBlock *tb)
 
 static inline void page_unlock_tb(const TranslationBlock *tb)
 {
-    page_unlock(page_find(tb->page_addr[0] >> TARGET_PAGE_BITS));
+    PageDesc *p1 = page_find(tb->page_addr[0] >> TARGET_PAGE_BITS);
+
+    page_unlock(p1);
     if (unlikely(tb->page_addr[1] != -1)) {
-        page_unlock(page_find(tb->page_addr[1] >> TARGET_PAGE_BITS));
+        PageDesc *p2 = page_find(tb->page_addr[1] >> TARGET_PAGE_BITS);
+
+        if (p2 != p1) {
+            page_unlock(p2);
+        }
     }
 }
 
@@ -850,22 +856,34 @@ static void page_lock_pair(PageDesc **ret_p1, tb_page_addr_t phys1,
                            PageDesc **ret_p2, tb_page_addr_t phys2, int alloc)
 {
     PageDesc *p1, *p2;
+    tb_page_addr_t page1;
+    tb_page_addr_t page2;
 
     assert_memory_lock();
-    g_assert(phys1 != -1 && phys1 != phys2);
-    p1 = page_find_alloc(phys1 >> TARGET_PAGE_BITS, alloc);
+    g_assert(phys1 != -1);
+
+    page1 = phys1 >> TARGET_PAGE_BITS;
+    page2 = phys2 >> TARGET_PAGE_BITS;
+
+    p1 = page_find_alloc(page1, alloc);
     if (ret_p1) {
         *ret_p1 = p1;
     }
     if (likely(phys2 == -1)) {
         page_lock(p1);
         return;
+    } else if (page1 == page2) {
+        page_lock(p1);
+        if (ret_p2) {
+            *ret_p2 = p1;
+        }
+        return;
     }
-    p2 = page_find_alloc(phys2 >> TARGET_PAGE_BITS, alloc);
+    p2 = page_find_alloc(page2, alloc);
     if (ret_p2) {
         *ret_p2 = p2;
     }
-    if (phys1 < phys2) {
+    if (page1 < page2) {
         page_lock(p1);
         page_lock(p2);
     } else {
@@ -1428,7 +1446,8 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
     phys_pc = tb->page_addr[0] + (tb->pc & ~TARGET_PAGE_MASK);
     h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb_cflags(tb) & CF_HASH_MASK,
                      tb->trace_vcpu_dstate);
-    if (!qht_remove(&tb_ctx.htable, tb, h)) {
+    if (!(tb->cflags & CF_NOCACHE) &&
+        !qht_remove(&tb_ctx.htable, tb, h)) {
         return;
     }
 
@@ -1474,7 +1493,7 @@ static void tb_phys_invalidate__locked(TranslationBlock *tb)
  */
 void tb_phys_invalidate(TranslationBlock *tb, tb_page_addr_t page_addr)
 {
-    if (page_addr == -1) {
+    if (page_addr == -1 && tb->page_addr[0] != -1) {
         page_lock_tb(tb);
         do_tb_phys_invalidate(tb, true);
         page_unlock_tb(tb);
@@ -1586,10 +1605,19 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
 {
     PageDesc *p;
     PageDesc *p2 = NULL;
-    void *existing_tb = NULL;
-    uint32_t h;
 
     assert_memory_lock();
+
+    if (phys_pc == -1) {
+        /*
+         * If the TB is not associated with a physical RAM page then
+         * it must be a temporary one-insn TB, and we have nothing to do
+         * except fill in the page_addr[] fields.
+         */
+        assert(tb->cflags & CF_NOCACHE);
+        tb->page_addr[0] = tb->page_addr[1] = -1;
+        return tb;
+    }
 
     /*
      * Add the TB to the page list, acquiring first the pages's locks.
@@ -1607,23 +1635,28 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
         tb->page_addr[1] = -1;
     }
 
-    /* add in the hash table */
-    h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb->cflags & CF_HASH_MASK,
-                     tb->trace_vcpu_dstate);
-    qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
+    if (!(tb->cflags & CF_NOCACHE)) {
+        void *existing_tb = NULL;
+        uint32_t h;
 
-    /* remove TB from the page(s) if we couldn't insert it */
-    if (unlikely(existing_tb)) {
-        tb_page_remove(p, tb);
-        invalidate_page_bitmap(p);
-        if (p2) {
-            tb_page_remove(p2, tb);
-            invalidate_page_bitmap(p2);
+        /* add in the hash table */
+        h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb->cflags & CF_HASH_MASK,
+                         tb->trace_vcpu_dstate);
+        qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
+
+        /* remove TB from the page(s) if we couldn't insert it */
+        if (unlikely(existing_tb)) {
+            tb_page_remove(p, tb);
+            invalidate_page_bitmap(p);
+            if (p2) {
+                tb_page_remove(p2, tb);
+                invalidate_page_bitmap(p2);
+            }
+            tb = existing_tb;
         }
-        tb = existing_tb;
     }
 
-    if (p2) {
+    if (p2 && p2 != p) {
         page_unlock(p2);
     }
     page_unlock(p);
@@ -1654,6 +1687,12 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     assert_memory_lock();
 
     phys_pc = get_page_addr_code(env, pc);
+
+    if (phys_pc == -1) {
+        /* Generate a temporary TB with 1 insn in it */
+        cflags &= ~CF_COUNT_MASK;
+        cflags |= CF_NOCACHE | 1;
+    }
 
  buffer_overflow:
     tb = tb_alloc(pc);
@@ -1773,7 +1812,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tb->jmp_dest[0] = (uintptr_t)NULL;
     tb->jmp_dest[1] = (uintptr_t)NULL;
 
-    /* init original jump addresses wich has been set during tcg_gen_code() */
+    /* init original jump addresses which have been set during tcg_gen_code() */
     if (tb->jmp_reset_offset[0] != TB_JMP_RESET_OFFSET_INVALID) {
         tb_reset_jump(tb, 0);
     }
@@ -1934,7 +1973,11 @@ void tb_invalidate_phys_page_range(tb_page_addr_t start, tb_page_addr_t end,
  *
  * Called with mmap_lock held for user-mode emulation.
  */
-void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end)
+#ifdef CONFIG_SOFTMMU
+void tb_invalidate_phys_range(ram_addr_t start, ram_addr_t end)
+#else
+void tb_invalidate_phys_range(target_ulong start, target_ulong end)
+#endif
 {
     struct page_collection *pages;
     tb_page_addr_t next;
@@ -2073,26 +2116,6 @@ static bool tb_invalidate_phys_page(tb_page_addr_t addr, uintptr_t pc)
 }
 #endif
 
-#if !defined(CONFIG_USER_ONLY)
-void tb_invalidate_phys_addr(AddressSpace *as, hwaddr addr, MemTxAttrs attrs)
-{
-    ram_addr_t ram_addr;
-    MemoryRegion *mr;
-    hwaddr l = 1;
-
-    rcu_read_lock();
-    mr = address_space_translate(as, addr, &addr, &l, false, attrs);
-    if (!(memory_region_is_ram(mr)
-          || memory_region_is_romd(mr))) {
-        rcu_read_unlock();
-        return;
-    }
-    ram_addr = memory_region_get_ram_addr(mr) + addr;
-    tb_invalidate_phys_page_range(ram_addr, ram_addr + 1, 0);
-    rcu_read_unlock();
-}
-#endif /* !defined(CONFIG_USER_ONLY) */
-
 /* user-mode: call with mmap_lock held */
 void tb_check_watchpoint(CPUState *cpu)
 {
@@ -2115,7 +2138,9 @@ void tb_check_watchpoint(CPUState *cpu)
 
         cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
         addr = get_page_addr_code(env, pc);
-        tb_invalidate_phys_range(addr, addr + 1);
+        if (addr != -1) {
+            tb_invalidate_phys_range(addr, addr + 1);
+        }
     }
 }
 

@@ -44,6 +44,7 @@
 #include "qapi/qmp/qstring.h"
 #include "crypto/secret.h"
 #include "scsi/utils.h"
+#include "trace.h"
 
 /* Conflict between scsi/utils.h and libiscsi! :( */
 #define SCSI_XFER_NONE ISCSI_XFER_NONE
@@ -734,7 +735,7 @@ retry:
         goto out_unlock;
     }
 
-    *pnum = lbasd->num_blocks * iscsilun->block_size;
+    *pnum = (int64_t) lbasd->num_blocks * iscsilun->block_size;
 
     if (lbasd->provisioning == SCSI_PROVISIONING_TYPE_DEALLOCATED ||
         lbasd->provisioning == SCSI_PROVISIONING_TYPE_ANCHORED) {
@@ -2085,8 +2086,8 @@ static void iscsi_reopen_commit(BDRVReopenState *reopen_state)
     }
 }
 
-static int iscsi_truncate(BlockDriverState *bs, int64_t offset,
-                          PreallocMode prealloc, Error **errp)
+static int coroutine_fn iscsi_co_truncate(BlockDriverState *bs, int64_t offset,
+                                          PreallocMode prealloc, Error **errp)
 {
     IscsiLun *iscsilun = bs->opaque;
     Error *local_err = NULL;
@@ -2193,9 +2194,11 @@ static int coroutine_fn iscsi_co_copy_range_from(BlockDriverState *bs,
                                                  BdrvChild *dst,
                                                  uint64_t dst_offset,
                                                  uint64_t bytes,
-                                                 BdrvRequestFlags flags)
+                                                 BdrvRequestFlags read_flags,
+                                                 BdrvRequestFlags write_flags)
 {
-    return bdrv_co_copy_range_to(src, src_offset, dst, dst_offset, bytes, flags);
+    return bdrv_co_copy_range_to(src, src_offset, dst, dst_offset, bytes,
+                                 read_flags, write_flags);
 }
 
 static struct scsi_task *iscsi_xcopy_task(int param_len)
@@ -2226,7 +2229,7 @@ static void iscsi_populate_target_desc(unsigned char *desc, IscsiLun *lun)
     desc[5] = (dd->designator_type & 0xF)
         | ((dd->association & 3) << 4);
     desc[7] = dd->designator_length;
-    memcpy(desc + 8, dd->designator, dd->designator_length);
+    memcpy(desc + 8, dd->designator, MIN(dd->designator_length, 20));
 
     desc[28] = 0;
     desc[29] = (lun->block_size >> 16) & 0xFF;
@@ -2332,7 +2335,8 @@ static int coroutine_fn iscsi_co_copy_range_to(BlockDriverState *bs,
                                                BdrvChild *dst,
                                                uint64_t dst_offset,
                                                uint64_t bytes,
-                                               BdrvRequestFlags flags)
+                                               BdrvRequestFlags read_flags,
+                                               BdrvRequestFlags write_flags)
 {
     IscsiLun *dst_lun = dst->bs->opaque;
     IscsiLun *src_lun;
@@ -2396,6 +2400,8 @@ retry:
     }
 
 out_unlock:
+
+    trace_iscsi_xcopy(src_lun, src_offset, dst_lun, dst_offset, bytes, r);
     g_free(iscsi_task.task);
     qemu_mutex_unlock(&dst_lun->mutex);
     g_free(iscsi_task.err_str);
@@ -2431,7 +2437,7 @@ static BlockDriver bdrv_iscsi = {
 
     .bdrv_getlength  = iscsi_getlength,
     .bdrv_get_info   = iscsi_get_info,
-    .bdrv_truncate   = iscsi_truncate,
+    .bdrv_co_truncate    = iscsi_co_truncate,
     .bdrv_refresh_limits = iscsi_refresh_limits,
 
     .bdrv_co_block_status  = iscsi_co_block_status,
@@ -2468,7 +2474,7 @@ static BlockDriver bdrv_iser = {
 
     .bdrv_getlength  = iscsi_getlength,
     .bdrv_get_info   = iscsi_get_info,
-    .bdrv_truncate   = iscsi_truncate,
+    .bdrv_co_truncate    = iscsi_co_truncate,
     .bdrv_refresh_limits = iscsi_refresh_limits,
 
     .bdrv_co_block_status  = iscsi_co_block_status,

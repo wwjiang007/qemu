@@ -725,7 +725,7 @@ static int find_image_format(BlockBackend *file, const char *filename,
  * Set the current 'total_sectors' value
  * Return 0 on success, -errno on error.
  */
-static int refresh_total_sectors(BlockDriverState *bs, int64_t hint)
+int refresh_total_sectors(BlockDriverState *bs, int64_t hint)
 {
     BlockDriver *drv = bs->drv;
 
@@ -1156,6 +1156,12 @@ static void bdrv_assign_node_name(BlockDriverState *bs,
         goto out;
     }
 
+    /* Make sure that the node name isn't truncated */
+    if (strlen(node_name) >= sizeof(bs->node_name)) {
+        error_setg(errp, "Node name too long");
+        goto out;
+    }
+
     /* copy node name into the bs and insert it into the graph list */
     pstrcpy(bs->node_name, sizeof(bs->node_name), node_name);
     QTAILQ_INSERT_TAIL(&graph_bdrv_states, bs, node_list);
@@ -1472,11 +1478,6 @@ static QDict *parse_json_filename(const char *filename, Error **errp)
 
     options_obj = qobject_from_json(filename, errp);
     if (!options_obj) {
-        /* Work around qobject_from_json() lossage TODO fix that */
-        if (errp && !*errp) {
-            error_setg(errp, "Could not parse the JSON options");
-            return NULL;
-        }
         error_prepend(errp, "Could not parse the JSON options: ");
         return NULL;
     }
@@ -1948,12 +1949,6 @@ int bdrv_child_try_set_perm(BdrvChild *c, uint64_t perm, uint64_t shared,
     return 0;
 }
 
-#define DEFAULT_PERM_PASSTHROUGH (BLK_PERM_CONSISTENT_READ \
-                                 | BLK_PERM_WRITE \
-                                 | BLK_PERM_WRITE_UNCHANGED \
-                                 | BLK_PERM_RESIZE)
-#define DEFAULT_PERM_UNCHANGED (BLK_PERM_ALL & ~DEFAULT_PERM_PASSTHROUGH)
-
 void bdrv_filter_default_perms(BlockDriverState *bs, BdrvChild *c,
                                const BdrvChildRole *role,
                                BlockReopenQueue *reopen_queue,
@@ -2066,7 +2061,7 @@ static void bdrv_replace_child_noperm(BdrvChild *child,
             }
             assert(num >= 0);
             for (i = 0; i < num; i++) {
-                child->role->drained_begin(child);
+                bdrv_parent_drained_begin_single(child, true);
             }
         }
 
@@ -2222,16 +2217,6 @@ static void bdrv_parent_cb_change_media(BlockDriverState *bs, bool load)
     QLIST_FOREACH(c, &bs->parents, next_parent) {
         if (c->role->change_media) {
             c->role->change_media(c, load);
-        }
-    }
-}
-
-static void bdrv_parent_cb_resize(BlockDriverState *bs)
-{
-    BdrvChild *c;
-    QLIST_FOREACH(c, &bs->parents, next_parent) {
-        if (c->role->resize) {
-            c->role->resize(c);
         }
     }
 }
@@ -2594,6 +2579,7 @@ static BlockDriverState *bdrv_open_inherit(const char *filename,
     BlockBackend *file = NULL;
     BlockDriverState *bs;
     BlockDriver *drv = NULL;
+    BdrvChild *child;
     const char *drvname;
     const char *backing;
     Error *local_err = NULL;
@@ -2775,6 +2761,15 @@ static BlockDriverState *bdrv_open_inherit(const char *filename,
         if (ret < 0) {
             goto close_and_fail;
         }
+    }
+
+    /* Remove all children options from bs->options and bs->explicit_options */
+    QLIST_FOREACH(child, &bs->children, next) {
+        char *child_key_dot;
+        child_key_dot = g_strdup_printf("%s.", child->name);
+        qdict_extract_subqdict(bs->explicit_options, NULL, child_key_dot);
+        qdict_extract_subqdict(bs->options, NULL, child_key_dot);
+        g_free(child_key_dot);
     }
 
     bdrv_refresh_filename(bs);
@@ -2986,6 +2981,7 @@ static BlockReopenQueue *bdrv_reopen_queue_child(BlockReopenQueue *bs_queue,
         }
 
         child_key_dot = g_strdup_printf("%s.", child->name);
+        qdict_extract_subqdict(explicit_options, NULL, child_key_dot);
         qdict_extract_subqdict(options, &new_child_options, child_key_dot);
         g_free(child_key_dot);
 
@@ -3012,7 +3008,7 @@ BlockReopenQueue *bdrv_reopen_queue(BlockReopenQueue *bs_queue,
  *
  * Reopens all BDS specified in the queue, with the appropriate
  * flags.  All devices are prepared for reopen, and failure of any
- * device will cause all device changes to be abandonded, and intermediate
+ * device will cause all device changes to be abandoned, and intermediate
  * data cleaned up.
  *
  * If all devices prepare successfully, then the changes are committed
@@ -3049,12 +3045,13 @@ int bdrv_reopen_multiple(AioContext *ctx, BlockReopenQueue *bs_queue, Error **er
 
 cleanup:
     QSIMPLEQ_FOREACH_SAFE(bs_entry, bs_queue, entry, next) {
-        if (ret && bs_entry->prepared) {
-            bdrv_reopen_abort(&bs_entry->state);
-        } else if (ret) {
+        if (ret) {
+            if (bs_entry->prepared) {
+                bdrv_reopen_abort(&bs_entry->state);
+            }
             qobject_unref(bs_entry->state.explicit_options);
+            qobject_unref(bs_entry->state.options);
         }
-        qobject_unref(bs_entry->state.options);
         g_free(bs_entry);
     }
     g_free(bs_queue);
@@ -3154,12 +3151,18 @@ int bdrv_reopen_prepare(BDRVReopenState *reopen_state, BlockReopenQueue *queue,
     Error *local_err = NULL;
     BlockDriver *drv;
     QemuOpts *opts;
+    QDict *orig_reopen_opts;
     const char *value;
     bool read_only;
 
     assert(reopen_state != NULL);
     assert(reopen_state->bs->drv != NULL);
     drv = reopen_state->bs->drv;
+
+    /* This function and each driver's bdrv_reopen_prepare() remove
+     * entries from reopen_state->options as they are processed, so
+     * we need to make a copy of the original QDict. */
+    orig_reopen_opts = qdict_clone_shallow(reopen_state->options);
 
     /* Process generic block layer options */
     opts = qemu_opts_create(&bdrv_runtime_opts, NULL, 0, &error_abort);
@@ -3267,8 +3270,13 @@ int bdrv_reopen_prepare(BDRVReopenState *reopen_state, BlockReopenQueue *queue,
 
     ret = 0;
 
+    /* Restore the original reopen_state->options QDict */
+    qobject_unref(reopen_state->options);
+    reopen_state->options = qobject_ref(orig_reopen_opts);
+
 error:
     qemu_opts_del(opts);
+    qobject_unref(orig_reopen_opts);
     return ret;
 }
 
@@ -3298,8 +3306,10 @@ void bdrv_reopen_commit(BDRVReopenState *reopen_state)
 
     /* set BDS specific flags now */
     qobject_unref(bs->explicit_options);
+    qobject_unref(bs->options);
 
     bs->explicit_options   = reopen_state->explicit_options;
+    bs->options            = reopen_state->options;
     bs->open_flags         = reopen_state->flags;
     bs->read_only = !(reopen_state->flags & BDRV_O_RDWR);
 
@@ -3340,8 +3350,6 @@ void bdrv_reopen_abort(BDRVReopenState *reopen_state)
         drv->bdrv_reopen_abort(reopen_state);
     }
 
-    qobject_unref(reopen_state->explicit_options);
-
     bdrv_abort_perm_update(reopen_state->bs);
 }
 
@@ -3359,7 +3367,9 @@ static void bdrv_close(BlockDriverState *bs)
     bdrv_drain(bs); /* in case flush left pending I/O */
 
     if (bs->drv) {
-        bs->drv->bdrv_close(bs);
+        if (bs->drv->bdrv_close) {
+            bs->drv->bdrv_close(bs);
+        }
         bs->drv = NULL;
     }
 
@@ -3782,58 +3792,6 @@ int bdrv_drop_intermediate(BlockDriverState *top, BlockDriverState *base,
     ret = 0;
 exit:
     bdrv_unref(top);
-    return ret;
-}
-
-/**
- * Truncate file to 'offset' bytes (needed only for file protocols)
- */
-int bdrv_truncate(BdrvChild *child, int64_t offset, PreallocMode prealloc,
-                  Error **errp)
-{
-    BlockDriverState *bs = child->bs;
-    BlockDriver *drv = bs->drv;
-    int ret;
-
-    assert(child->perm & BLK_PERM_RESIZE);
-
-    /* if bs->drv == NULL, bs is closed, so there's nothing to do here */
-    if (!drv) {
-        error_setg(errp, "No medium inserted");
-        return -ENOMEDIUM;
-    }
-    if (offset < 0) {
-        error_setg(errp, "Image size cannot be negative");
-        return -EINVAL;
-    }
-
-    if (!drv->bdrv_truncate) {
-        if (bs->file && drv->is_filter) {
-            return bdrv_truncate(bs->file, offset, prealloc, errp);
-        }
-        error_setg(errp, "Image format driver does not support resize");
-        return -ENOTSUP;
-    }
-    if (bs->read_only) {
-        error_setg(errp, "Image is read-only");
-        return -EACCES;
-    }
-
-    assert(!(bs->open_flags & BDRV_O_INACTIVE));
-
-    ret = drv->bdrv_truncate(bs, offset, prealloc, errp);
-    if (ret < 0) {
-        return ret;
-    }
-    ret = refresh_total_sectors(bs, offset >> BDRV_SECTOR_BITS);
-    if (ret < 0) {
-        error_setg_errno(errp, -ret, "Could not refresh total sector count");
-    } else {
-        offset = bs->total_sectors * BDRV_SECTOR_SIZE;
-    }
-    bdrv_dirty_bitmap_truncate(bs, offset);
-    bdrv_parent_cb_resize(bs);
-    atomic_inc(&bs->write_gen);
     return ret;
 }
 
@@ -5187,16 +5145,13 @@ static bool append_open_options(QDict *d, BlockDriverState *bs)
     QemuOptDesc *desc;
     BdrvChild *child;
     bool found_any = false;
-    const char *p;
 
     for (entry = qdict_first(bs->options); entry;
          entry = qdict_next(bs->options, entry))
     {
-        /* Exclude options for children */
+        /* Exclude node-name references to children */
         QLIST_FOREACH(child, &bs->children, next) {
-            if (strstart(qdict_entry_key(entry), child->name, &p)
-                && (!*p || *p == '.'))
-            {
+            if (!strcmp(entry->key, child->name)) {
                 break;
             }
         }

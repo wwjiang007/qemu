@@ -644,6 +644,21 @@ sendkey ctrl-alt-f1
 This command is useful to send keys that your graphical user interface
 intercepts at low level, such as @code{ctrl-alt-f1} in X Window.
 ETEXI
+    {
+        .name       = "sync-profile",
+        .args_type  = "op:s?",
+        .params     = "[on|off|reset]",
+        .help       = "enable, disable or reset synchronization profiling. "
+                      "With no arguments, prints whether profiling is on or off.",
+        .cmd        = hmp_sync_profile,
+    },
+
+STEXI
+@item sync-profile [on|off|reset]
+@findex sync-profile
+Enable, disable or reset synchronization profiling. With no arguments, prints
+whether profiling is on or off.
+ETEXI
 
     {
         .name       = "system_reset",
@@ -1136,30 +1151,33 @@ ETEXI
 
     {
         .name       = "dump-guest-memory",
-        .args_type  = "paging:-p,detach:-d,zlib:-z,lzo:-l,snappy:-s,filename:F,begin:l?,length:l?",
-        .params     = "[-p] [-d] [-z|-l|-s] filename [begin length]",
+        .args_type  = "paging:-p,detach:-d,windmp:-w,zlib:-z,lzo:-l,snappy:-s,filename:F,begin:l?,length:l?",
+        .params     = "[-p] [-d] [-z|-l|-s|-w] filename [begin length]",
         .help       = "dump guest memory into file 'filename'.\n\t\t\t"
                       "-p: do paging to get guest's memory mapping.\n\t\t\t"
                       "-d: return immediately (do not wait for completion).\n\t\t\t"
                       "-z: dump in kdump-compressed format, with zlib compression.\n\t\t\t"
                       "-l: dump in kdump-compressed format, with lzo compression.\n\t\t\t"
                       "-s: dump in kdump-compressed format, with snappy compression.\n\t\t\t"
+                      "-w: dump in Windows crashdump format (can be used instead of ELF-dump converting),\n\t\t\t"
+                      "    for Windows x64 guests with vmcoreinfo driver only.\n\t\t\t"
                       "begin: the starting physical address.\n\t\t\t"
                       "length: the memory size, in bytes.",
         .cmd        = hmp_dump_guest_memory,
     },
 
-
 STEXI
 @item dump-guest-memory [-p] @var{filename} @var{begin} @var{length}
-@item dump-guest-memory [-z|-l|-s] @var{filename}
+@item dump-guest-memory [-z|-l|-s|-w] @var{filename}
 @findex dump-guest-memory
 Dump guest memory to @var{protocol}. The file can be processed with crash or
-gdb. Without -z|-l|-s, the dump format is ELF.
+gdb. Without -z|-l|-s|-w, the dump format is ELF.
         -p: do paging to get guest's memory mapping.
         -z: dump in kdump-compressed format, with zlib compression.
         -l: dump in kdump-compressed format, with lzo compression.
         -s: dump in kdump-compressed format, with snappy compression.
+        -w: dump in Windows crashdump format (can be used instead of ELF-dump converting),
+            for Windows x64 guests with vmcoreinfo driver only
   filename: dump file name.
      begin: the starting physical address. It's optional, and should be
             specified together with length.

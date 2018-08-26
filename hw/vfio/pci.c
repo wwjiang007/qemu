@@ -28,6 +28,7 @@
 #include "qemu/error-report.h"
 #include "qemu/option.h"
 #include "qemu/range.h"
+#include "qemu/units.h"
 #include "sysemu/kvm.h"
 #include "sysemu/sysemu.h"
 #include "pci.h"
@@ -989,7 +990,6 @@ static void vfio_pci_size_rom(VFIOPCIDevice *vdev)
     pci_register_bar(&vdev->pdev, PCI_ROM_SLOT,
                      PCI_BASE_ADDRESS_SPACE_MEMORY, &vdev->pdev.rom);
 
-    vdev->pdev.has_rom = true;
     vdev->rom_read_failed = false;
 }
 
@@ -1417,7 +1417,7 @@ static void vfio_pci_relocate_msix(VFIOPCIDevice *vdev, Error **errp)
     }
 
     /* 2GB max size for 32-bit BARs, cannot double if already > 1G */
-    if (vdev->bars[target_bar].size > (1 * 1024 * 1024 * 1024) &&
+    if (vdev->bars[target_bar].size > 1 * GiB &&
         !vdev->bars[target_bar].mem64) {
         error_setg(errp, "Invalid MSI-X relocation BAR %d, "
                    "no space to extend 32-bit BAR", target_bar);
@@ -2804,12 +2804,13 @@ static void vfio_realize(PCIDevice *pdev, Error **errp)
     VFIOPCIDevice *vdev = DO_UPCAST(VFIOPCIDevice, pdev, pdev);
     VFIODevice *vbasedev_iter;
     VFIOGroup *group;
-    char *tmp, group_path[PATH_MAX], *group_name;
+    char *tmp, *subsys, group_path[PATH_MAX], *group_name;
     Error *err = NULL;
     ssize_t len;
     struct stat st;
     int groupid;
     int i, ret;
+    bool is_mdev;
 
     if (!vdev->vbasedev.sysfsdev) {
         if (!(~vdev->host.domain || ~vdev->host.bus ||
@@ -2867,6 +2868,27 @@ static void vfio_realize(PCIDevice *pdev, Error **errp)
             vfio_put_group(group);
             goto error;
         }
+    }
+
+    /*
+     * Mediated devices *might* operate compatibly with memory ballooning, but
+     * we cannot know for certain, it depends on whether the mdev vendor driver
+     * stays in sync with the active working set of the guest driver.  Prevent
+     * the x-balloon-allowed option unless this is minimally an mdev device.
+     */
+    tmp = g_strdup_printf("%s/subsystem", vdev->vbasedev.sysfsdev);
+    subsys = realpath(tmp, NULL);
+    g_free(tmp);
+    is_mdev = subsys && (strcmp(subsys, "/sys/bus/mdev") == 0);
+    free(subsys);
+
+    trace_vfio_mdev(vdev->vbasedev.name, is_mdev);
+
+    if (vdev->vbasedev.balloon_allowed && !is_mdev) {
+        error_setg(errp, "x-balloon-allowed only potentially compatible "
+                   "with mdev devices");
+        vfio_put_group(group);
+        goto error;
     }
 
     ret = vfio_get_device(group, vdev->vbasedev.name, &vdev->vbasedev, errp);
@@ -3170,6 +3192,8 @@ static Property vfio_pci_dev_properties[] = {
     DEFINE_PROP_BIT("x-igd-opregion", VFIOPCIDevice, features,
                     VFIO_FEATURE_ENABLE_IGD_OPREGION_BIT, false),
     DEFINE_PROP_BOOL("x-no-mmap", VFIOPCIDevice, vbasedev.no_mmap, false),
+    DEFINE_PROP_BOOL("x-balloon-allowed", VFIOPCIDevice,
+                     vbasedev.balloon_allowed, false),
     DEFINE_PROP_BOOL("x-no-kvm-intx", VFIOPCIDevice, no_kvm_intx, false),
     DEFINE_PROP_BOOL("x-no-kvm-msi", VFIOPCIDevice, no_kvm_msi, false),
     DEFINE_PROP_BOOL("x-no-kvm-msix", VFIOPCIDevice, no_kvm_msix, false),
