@@ -195,8 +195,7 @@ supported_kvm_target() {
         i386:i386 | i386:x86_64 | i386:x32 | \
         x86_64:i386 | x86_64:x86_64 | x86_64:x32 | \
         mips:mips | mipsel:mips | \
-        ppc:ppc | ppcemb:ppc | ppc64:ppc | \
-        ppc:ppc64 | ppcemb:ppc64 | ppc64:ppc64 | \
+        ppc:ppc | ppc64:ppc | ppc:ppc64 | ppc64:ppc64 | \
         s390x:s390x)
             return 0
         ;;
@@ -297,6 +296,8 @@ if test -e "$source_path/.git"
 then
     git_update=yes
     git_submodules="ui/keycodemapdb"
+    git_submodules="$git_submodules tests/fp/berkeley-testfloat-3"
+    git_submodules="$git_submodules tests/fp/berkeley-softfloat-3"
 else
     git_update=no
     git_submodules=""
@@ -5715,12 +5716,15 @@ fi
 
 tools=""
 if test "$want_tools" = "yes" ; then
-  tools="qemu-img\$(EXESUF) qemu-io\$(EXESUF) $tools"
+  tools="qemu-img\$(EXESUF) qemu-io\$(EXESUF) qemu-edid\$(EXESUF) $tools"
   if [ "$linux" = "yes" -o "$bsd" = "yes" -o "$solaris" = "yes" ] ; then
     tools="qemu-nbd\$(EXESUF) $tools"
   fi
   if [ "$ivshmem" = "yes" ]; then
     tools="ivshmem-client\$(EXESUF) ivshmem-server\$(EXESUF) $tools"
+  fi
+  if [ "$posix" = "yes" ] && [ "$curl" = "yes" ]; then
+    tools="elf2dmp $tools"
   fi
 fi
 if test "$softmmu" = yes ; then
@@ -6951,7 +6955,7 @@ if test "$linux" = "yes" ; then
   i386|x86_64|x32)
     linux_arch=x86
     ;;
-  ppcemb|ppc|ppc64)
+  ppc|ppc64)
     linux_arch=powerpc
     ;;
   s390x)
@@ -6981,7 +6985,7 @@ target_name=$(echo $target | cut -d '-' -f 1)
 target_bigendian="no"
 
 case "$target_name" in
-  armeb|aarch64_be|hppa|lm32|m68k|microblaze|mips|mipsn32|mips64|moxie|or1k|ppc|ppcemb|ppc64|ppc64abi32|s390x|sh4eb|sparc|sparc64|sparc32plus|xtensaeb)
+  armeb|aarch64_be|hppa|lm32|m68k|microblaze|mips|mipsn32|mips64|moxie|or1k|ppc|ppc64|ppc64abi32|s390x|sh4eb|sparc|sparc64|sparc32plus|xtensaeb)
   target_bigendian=yes
   ;;
 esac
@@ -7025,12 +7029,14 @@ TARGET_ABI_DIR=""
 
 case "$target_name" in
   i386)
+    mttcg="yes"
     gdb_xml_files="i386-32bit.xml i386-32bit-core.xml i386-32bit-sse.xml"
     target_compiler=$cross_cc_i386
     target_compiler_cflags=$cross_cc_ccflags_i386
   ;;
   x86_64)
     TARGET_BASE_ARCH=i386
+    mttcg="yes"
     gdb_xml_files="i386-64bit.xml i386-64bit-core.xml i386-64bit-sse.xml"
     target_compiler=$cross_cc_x86_64
   ;;
@@ -7108,12 +7114,6 @@ case "$target_name" in
   ppc)
     gdb_xml_files="power-core.xml power-fpu.xml power-altivec.xml power-spe.xml"
     target_compiler=$cross_cc_powerpc
-  ;;
-  ppcemb)
-    TARGET_BASE_ARCH=ppc
-    TARGET_ABI_DIR=ppc
-    gdb_xml_files="power-core.xml power-fpu.xml power-altivec.xml power-spe.xml"
-    target_compiler=$cross_cc_ppcemb
   ;;
   ppc64)
     TARGET_BASE_ARCH=ppc
@@ -7451,12 +7451,14 @@ fi
 
 # build tree in object directory in case the source is not in the current directory
 DIRS="tests tests/tcg tests/tcg/cris tests/tcg/lm32 tests/libqos tests/qapi-schema tests/tcg/xtensa tests/qemu-iotests tests/vm"
+DIRS="$DIRS tests/fp"
 DIRS="$DIRS docs docs/interop fsdev scsi"
 DIRS="$DIRS pc-bios/optionrom pc-bios/spapr-rtas pc-bios/s390-ccw"
 DIRS="$DIRS roms/seabios roms/vgabios"
 FILES="Makefile tests/tcg/Makefile qdict-test-data.txt"
 FILES="$FILES tests/tcg/cris/Makefile tests/tcg/cris/.gdbinit"
 FILES="$FILES tests/tcg/lm32/Makefile tests/tcg/xtensa/Makefile po/Makefile"
+FILES="$FILES tests/fp/Makefile"
 FILES="$FILES pc-bios/optionrom/Makefile pc-bios/keymaps"
 FILES="$FILES pc-bios/spapr-rtas/Makefile"
 FILES="$FILES pc-bios/s390-ccw/Makefile"
@@ -7534,6 +7536,46 @@ cat <<EOD >config.status
 # Compiler output produced by configure, useful for debugging
 # configure, is in config.log if it exists.
 EOD
+
+preserve_env() {
+    envname=$1
+
+    eval envval=\$$envname
+
+    if test -n "$envval"
+    then
+	echo "$envname='$envval'" >> config.status
+	echo "export $envname" >> config.status
+    else
+	echo "unset $envname" >> config.status
+    fi
+}
+
+# Preserve various env variables that influence what
+# features/build target configure will detect
+preserve_env AR
+preserve_env AS
+preserve_env CC
+preserve_env CPP
+preserve_env CXX
+preserve_env INSTALL
+preserve_env LD
+preserve_env LD_LIBRARY_PATH
+preserve_env LIBTOOL
+preserve_env MAKE
+preserve_env NM
+preserve_env OBJCOPY
+preserve_env PATH
+preserve_env PKG_CONFIG
+preserve_env PKG_CONFIG_LIBDIR
+preserve_env PKG_CONFIG_PATH
+preserve_env PYTHON
+preserve_env SDL_CONFIG
+preserve_env SDL2_CONFIG
+preserve_env SMBD
+preserve_env STRIP
+preserve_env WINDRES
+
 printf "exec" >>config.status
 printf " '%s'" "$0" "$@" >>config.status
 echo ' "$@"' >>config.status

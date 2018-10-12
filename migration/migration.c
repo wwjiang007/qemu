@@ -204,7 +204,7 @@ void migration_incoming_state_destroy(void)
 static void migrate_generate_event(int new_state)
 {
     if (migrate_use_events()) {
-        qapi_event_send_migration(new_state, &error_abort);
+        qapi_event_send_migration(new_state);
     }
 }
 
@@ -302,7 +302,7 @@ void qemu_start_incoming_migration(const char *uri, Error **errp)
 {
     const char *p;
 
-    qapi_event_send_migration(MIGRATION_STATUS_SETUP, &error_abort);
+    qapi_event_send_migration(MIGRATION_STATUS_SETUP);
     if (!strcmp(uri, "defer")) {
         deferred_incoming_migration(errp);
     } else if (strstart(uri, "tcp:", &p)) {
@@ -756,6 +756,18 @@ static void populate_ram_info(MigrationInfo *info, MigrationState *s)
         info->xbzrle_cache->cache_miss = xbzrle_counters.cache_miss;
         info->xbzrle_cache->cache_miss_rate = xbzrle_counters.cache_miss_rate;
         info->xbzrle_cache->overflow = xbzrle_counters.overflow;
+    }
+
+    if (migrate_use_compression()) {
+        info->has_compression = true;
+        info->compression = g_malloc0(sizeof(*info->compression));
+        info->compression->pages = compression_counters.pages;
+        info->compression->busy = compression_counters.busy;
+        info->compression->busy_rate = compression_counters.busy_rate;
+        info->compression->compressed_size =
+                                    compression_counters.compressed_size;
+        info->compression->compression_rate =
+                                    compression_counters.compression_rate;
     }
 
     if (cpu_throttle_active()) {
@@ -2268,7 +2280,10 @@ out:
              */
             if (postcopy_pause_return_path_thread(ms)) {
                 /* Reload rp, reset the rest */
-                rp = ms->rp_state.from_dst_file;
+                if (rp != ms->rp_state.from_dst_file) {
+                    qemu_fclose(rp);
+                    rp = ms->rp_state.from_dst_file;
+                }
                 ms->rp_state.error = false;
                 goto retry;
             }

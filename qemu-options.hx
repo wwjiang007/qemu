@@ -454,16 +454,6 @@ modprobe i810_audio clocking=48000
 @end example
 ETEXI
 
-DEF("balloon", HAS_ARG, QEMU_OPTION_balloon,
-    "-balloon virtio[,addr=str]\n"
-    "                enable virtio balloon device (deprecated)\n", QEMU_ARCH_ALL)
-STEXI
-@item -balloon virtio[,addr=@var{addr}]
-@findex -balloon
-Enable virtio balloon device, optionally with PCI address @var{addr}. This
-option is deprecated, use @option{-device virtio-balloon} instead.
-ETEXI
-
 DEF("device", HAS_ARG, QEMU_OPTION_device,
     "-device driver[,prop[=value][,...]]\n"
     "                add device (based on driver)\n"
@@ -742,19 +732,23 @@ image file)
 
 @item cache-size
 The maximum total size of the L2 table and refcount block caches in bytes
-(default: 1048576 bytes or 8 clusters, whichever is larger)
+(default: the sum of l2-cache-size and refcount-cache-size)
 
 @item l2-cache-size
 The maximum size of the L2 table cache in bytes
-(default: 4/5 of the total cache size)
+(default: if cache-size is not specified - 32M on Linux platforms, and 8M on
+non-Linux platforms; otherwise, as large as possible within the cache-size,
+while permitting the requested or the minimal refcount cache size)
 
 @item refcount-cache-size
 The maximum size of the refcount block cache in bytes
-(default: 1/5 of the total cache size)
+(default: 4 times the cluster size; or if cache-size is specified, the part of
+it which is not used for the L2 cache)
 
 @item cache-clean-interval
 Clean unused entries in the L2 and refcount caches. The interval is in seconds.
-The default value is 0 and it disables this feature.
+The default value is 600 on supporting platforms, and 0 on other platforms.
+Setting it to 0 disables this feature.
 
 @item pass-discard-request
 Whether discard requests to the qcow2 device should be forwarded to the data
@@ -1632,49 +1626,6 @@ will cause the VNC server socket to enable the VeNCrypt auth
 mechanism.  The credentials should have been previously created
 using the @option{-object tls-creds} argument.
 
-The @option{tls-creds} parameter obsoletes the @option{tls},
-@option{x509}, and @option{x509verify} options, and as such
-it is not permitted to set both new and old type options at
-the same time.
-
-@item tls
-
-Require that client use TLS when communicating with the VNC server. This
-uses anonymous TLS credentials so is susceptible to a man-in-the-middle
-attack. It is recommended that this option be combined with either the
-@option{x509} or @option{x509verify} options.
-
-This option is now deprecated in favor of using the @option{tls-creds}
-argument.
-
-@item x509=@var{/path/to/certificate/dir}
-
-Valid if @option{tls} is specified. Require that x509 credentials are used
-for negotiating the TLS session. The server will send its x509 certificate
-to the client. It is recommended that a password be set on the VNC server
-to provide authentication of the client when this is used. The path following
-this option specifies where the x509 certificates are to be loaded from.
-See the @ref{vnc_security} section for details on generating certificates.
-
-This option is now deprecated in favour of using the @option{tls-creds}
-argument.
-
-@item x509verify=@var{/path/to/certificate/dir}
-
-Valid if @option{tls} is specified. Require that x509 credentials are used
-for negotiating the TLS session. The server will send its x509 certificate
-to the client, and request that the client send its own x509 certificate.
-The server will validate the client's certificate against the CA certificate,
-and reject clients when validation fails. If the certificate authority is
-trusted, this is a sufficient authentication mechanism. You may still wish
-to set a password on the VNC server as a second authentication layer. The
-path following this option specifies where the x509 certificates are to
-be loaded from. See the @ref{vnc_security} section for details on generating
-certificates.
-
-This option is now deprecated in favour of using the @option{tls-creds}
-argument.
-
 @item sasl
 
 Require that the client use SASL to authenticate with the VNC server.
@@ -1763,9 +1714,6 @@ Use it when installing Windows 2000 to avoid a disk full bug. After
 Windows 2000 is installed, you no longer need this option (this option
 slows down the IDE transfers).
 ETEXI
-
-HXCOMM Deprecated by -rtc
-DEF("rtc-td-hack", 0, QEMU_OPTION_rtc_td_hack, "", QEMU_ARCH_I386)
 
 DEF("no-fd-bootchk", 0, QEMU_OPTION_no_fd_bootchk,
     "-no-fd-bootchk  disable boot signature checking for floppy disks\n",
@@ -1868,16 +1816,6 @@ DEFHEADING(Network options:)
 STEXI
 @table @option
 ETEXI
-
-HXCOMM Legacy slirp options (now moved to -net user):
-#ifdef CONFIG_SLIRP
-DEF("tftp", HAS_ARG, QEMU_OPTION_tftp, "", QEMU_ARCH_ALL)
-DEF("bootp", HAS_ARG, QEMU_OPTION_bootp, "", QEMU_ARCH_ALL)
-DEF("redir", HAS_ARG, QEMU_OPTION_redir, "", QEMU_ARCH_ALL)
-#ifndef _WIN32
-DEF("smb", HAS_ARG, QEMU_OPTION_smb, "", QEMU_ARCH_ALL)
-#endif
-#endif
 
 DEF("netdev", HAS_ARG, QEMU_OPTION_netdev,
 #ifdef CONFIG_SLIRP
@@ -2205,11 +2143,6 @@ qemu-system-i386 -nic  'user,id=n1,guestfwd=tcp:10.0.2.100:1234-cmd:netcat 10.10
 @end example
 
 @end table
-
-Note: Legacy stand-alone options -tftp, -bootp, -smb and -redir are still
-processed and applied to -net user. Mixing them with the new configuration
-syntax gives undefined results. Their use for new applications is discouraged
-as they will be removed from future versions.
 
 @item -netdev tap,id=@var{id}[,fd=@var{h}][,ifname=@var{name}][,script=@var{file}][,downscript=@var{dfile}][,br=@var{bridge}][,helper=@var{helper}]
 Configure a host TAP network backend with ID @var{id}.
@@ -3524,10 +3457,6 @@ ETEXI
 HXCOMM Silently ignored for compatibility
 DEF("clock", HAS_ARG, QEMU_OPTION_clock, "", QEMU_ARCH_ALL)
 
-HXCOMM Options deprecated by -rtc
-DEF("localtime", 0, QEMU_OPTION_localtime, "", QEMU_ARCH_ALL)
-DEF("startdate", HAS_ARG, QEMU_OPTION_startdate, "", QEMU_ARCH_ALL)
-
 DEF("rtc", HAS_ARG, QEMU_OPTION_rtc, \
     "-rtc [base=utc|localtime|date][,clock=host|rt|vm][,driftfix=none|slew]\n" \
     "                set the RTC base and clock, enable drift fix for clock ticks (x86 only)\n",
@@ -3886,8 +3815,7 @@ Write device configuration to @var{file}. The @var{file} can be either filename 
 command line and device configuration into file or dash @code{-}) character to print the
 output to stdout. This can be later used as input file for @code{-readconfig} option.
 ETEXI
-HXCOMM Deprecated, same as -no-user-config
-DEF("nodefconfig", 0, QEMU_OPTION_nodefconfig, "", QEMU_ARCH_ALL)
+
 DEF("no-user-config", 0, QEMU_OPTION_nouserconfig,
     "-no-user-config\n"
     "                do not load default user-provided config files at startup\n",
@@ -3898,6 +3826,7 @@ STEXI
 The @code{-no-user-config} option makes QEMU not load any of the user-provided
 config files on @var{sysconfdir}.
 ETEXI
+
 DEF("trace", HAS_ARG, QEMU_OPTION_trace,
     "-trace [[enable=]<pattern>][,events=<file>][,file=<file>]\n"
     "                specify tracing options\n",

@@ -823,44 +823,33 @@ int qemu_timedate_diff(struct tm *tm)
     return seconds - qemu_time();
 }
 
-static void configure_rtc_date_offset(const char *startdate, int legacy)
+static void configure_rtc_date_offset(const char *startdate)
 {
     time_t rtc_start_date;
     struct tm tm;
 
-    if (!strcmp(startdate, "now") && legacy) {
-        rtc_date_offset = -1;
+    if (sscanf(startdate, "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon,
+               &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
+        /* OK */
+    } else if (sscanf(startdate, "%d-%d-%d",
+                      &tm.tm_year, &tm.tm_mon, &tm.tm_mday) == 3) {
+        tm.tm_hour = 0;
+        tm.tm_min = 0;
+        tm.tm_sec = 0;
     } else {
-        if (sscanf(startdate, "%d-%d-%dT%d:%d:%d",
-                   &tm.tm_year,
-                   &tm.tm_mon,
-                   &tm.tm_mday,
-                   &tm.tm_hour,
-                   &tm.tm_min,
-                   &tm.tm_sec) == 6) {
-            /* OK */
-        } else if (sscanf(startdate, "%d-%d-%d",
-                          &tm.tm_year,
-                          &tm.tm_mon,
-                          &tm.tm_mday) == 3) {
-            tm.tm_hour = 0;
-            tm.tm_min = 0;
-            tm.tm_sec = 0;
-        } else {
-            goto date_fail;
-        }
-        tm.tm_year -= 1900;
-        tm.tm_mon--;
-        rtc_start_date = mktimegm(&tm);
-        if (rtc_start_date == -1) {
-        date_fail:
-            error_report("invalid date format");
-            error_printf("valid formats: "
-                         "'2006-06-17T16:01:21' or '2006-06-17'\n");
-            exit(1);
-        }
-        rtc_date_offset = qemu_time() - rtc_start_date;
+        goto date_fail;
     }
+    tm.tm_year -= 1900;
+    tm.tm_mon--;
+    rtc_start_date = mktimegm(&tm);
+    if (rtc_start_date == -1) {
+    date_fail:
+        error_report("invalid date format");
+        error_printf("valid formats: "
+                     "'2006-06-17T16:01:21' or '2006-06-17'\n");
+        exit(1);
+    }
+    rtc_date_offset = qemu_time() - rtc_start_date;
 }
 
 static void configure_rtc(QemuOpts *opts)
@@ -878,7 +867,7 @@ static void configure_rtc(QemuOpts *opts)
                       "-rtc base=localtime");
             replay_add_blocker(blocker);
         } else {
-            configure_rtc_date_offset(value, 0);
+            configure_rtc_date_offset(value);
         }
     }
     value = qemu_opt_get(opts, "clock");
@@ -1647,8 +1636,7 @@ void qemu_system_reset(ShutdownCause reason)
         qemu_devices_reset();
     }
     if (reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
-        qapi_event_send_reset(shutdown_caused_by_guest(reason),
-                              &error_abort);
+        qapi_event_send_reset(shutdown_caused_by_guest(reason));
     }
     cpu_synchronize_all_post_reset();
 }
@@ -1661,11 +1649,11 @@ void qemu_system_guest_panicked(GuestPanicInformation *info)
         current_cpu->crash_occurred = true;
     }
     qapi_event_send_guest_panicked(GUEST_PANIC_ACTION_PAUSE,
-                                   !!info, info, &error_abort);
+                                   !!info, info);
     vm_stop(RUN_STATE_GUEST_PANICKED);
     if (!no_shutdown) {
         qapi_event_send_guest_panicked(GUEST_PANIC_ACTION_POWEROFF,
-                                       !!info, info, &error_abort);
+                                       !!info, info);
         qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_PANIC);
     }
 
@@ -1706,7 +1694,7 @@ static void qemu_system_suspend(void)
     pause_all_vcpus();
     notifier_list_notify(&suspend_notifiers, NULL);
     runstate_set(RUN_STATE_SUSPENDED);
-    qapi_event_send_suspend(&error_abort);
+    qapi_event_send_suspend();
 }
 
 void qemu_system_suspend_request(void)
@@ -1776,7 +1764,7 @@ void qemu_system_shutdown_request(ShutdownCause reason)
 
 static void qemu_system_powerdown(void)
 {
-    qapi_event_send_powerdown(&error_abort);
+    qapi_event_send_powerdown();
     notifier_list_notify(&powerdown_notifiers, NULL);
 }
 
@@ -1819,8 +1807,7 @@ static bool main_loop_should_exit(void)
     request = qemu_shutdown_requested();
     if (request) {
         qemu_kill_report();
-        qapi_event_send_shutdown(shutdown_caused_by_guest(request),
-                                 &error_abort);
+        qapi_event_send_shutdown(shutdown_caused_by_guest(request));
         if (no_shutdown) {
             vm_stop(RUN_STATE_SHUTDOWN);
         } else {
@@ -1843,7 +1830,7 @@ static bool main_loop_should_exit(void)
         notifier_list_notify(&wakeup_notifiers, &wakeup_reason);
         wakeup_reason = QEMU_WAKEUP_REASON_NONE;
         resume_all_vcpus();
-        qapi_event_send_wakeup(&error_abort);
+        qapi_event_send_wakeup();
     }
     if (qemu_powerdown_requested()) {
         qemu_system_powerdown();
@@ -2127,36 +2114,6 @@ static void parse_display(const char *p)
     }
 }
 
-static int balloon_parse(const char *arg)
-{
-    QemuOpts *opts;
-
-    warn_report("This option is deprecated. "
-                "Use '--device virtio-balloon' to enable the balloon device.");
-
-    if (strcmp(arg, "none") == 0) {
-        return 0;
-    }
-
-    if (!strncmp(arg, "virtio", 6)) {
-        if (arg[6] == ',') {
-            /* have params -> parse them */
-            opts = qemu_opts_parse_noisily(qemu_find_opts("device"), arg + 7,
-                                           false);
-            if (!opts)
-                return  -1;
-        } else {
-            /* create empty opts */
-            opts = qemu_opts_create(qemu_find_opts("device"), NULL, 0,
-                                    &error_abort);
-        }
-        qemu_opt_set(opts, "driver", "virtio-balloon", &error_abort);
-        return 0;
-    }
-
-    return -1;
-}
-
 char *qemu_find_file(int type, const char *name)
 {
     int i;
@@ -2353,7 +2310,7 @@ static void monitor_parse(const char *optarg, const char *mode, bool pretty)
     } else {
         snprintf(label, sizeof(label), "compat_monitor%d",
                  monitor_device_index);
-        opts = qemu_chr_parse_compat(label, optarg);
+        opts = qemu_chr_parse_compat(label, optarg, true);
         if (!opts) {
             error_report("parse error: %s", optarg);
             exit(1);
@@ -2425,7 +2382,7 @@ static int serial_parse(const char *devname)
     snprintf(label, sizeof(label), "serial%d", index);
     serial_hds = g_renew(Chardev *, serial_hds, index + 1);
 
-    serial_hds[index] = qemu_chr_new(label, devname);
+    serial_hds[index] = qemu_chr_new_mux_mon(label, devname);
     if (!serial_hds[index]) {
         error_report("could not connect serial device"
                      " to character backend '%s'", devname);
@@ -2461,7 +2418,7 @@ static int parallel_parse(const char *devname)
         exit(1);
     }
     snprintf(label, sizeof(label), "parallel%d", index);
-    parallel_hds[index] = qemu_chr_new(label, devname);
+    parallel_hds[index] = qemu_chr_new_mux_mon(label, devname);
     if (!parallel_hds[index]) {
         error_report("could not connect parallel device"
                      " to character backend '%s'", devname);
@@ -2492,7 +2449,7 @@ static int virtcon_parse(const char *devname)
     qemu_opt_set(dev_opts, "driver", "virtconsole", &error_abort);
 
     snprintf(label, sizeof(label), "virtcon%d", index);
-    virtcon_hds[index] = qemu_chr_new(label, devname);
+    virtcon_hds[index] = qemu_chr_new_mux_mon(label, devname);
     if (!virtcon_hds[index]) {
         error_report("could not connect virtio console"
                      " to character backend '%s'", devname);
@@ -2508,7 +2465,7 @@ static int debugcon_parse(const char *devname)
 {
     QemuOpts *opts;
 
-    if (!qemu_chr_new("debugcon", devname)) {
+    if (!qemu_chr_new_mux_mon("debugcon", devname)) {
         exit(1);
     }
     opts = qemu_opts_create(qemu_find_opts("device"), "debugcon", 1, NULL);
@@ -2601,6 +2558,16 @@ void qemu_remove_exit_notifier(Notifier *notify)
 static void qemu_run_exit_notifiers(void)
 {
     notifier_list_notify(&exit_notifiers, NULL);
+}
+
+static const char *pid_file;
+static Notifier qemu_unlink_pidfile_notifier;
+
+static void qemu_unlink_pidfile(Notifier *n, void *data)
+{
+    if (pid_file) {
+        unlink(pid_file);
+    }
 }
 
 bool machine_init_done;
@@ -2729,8 +2696,55 @@ static int machine_set_property(void *opaque,
  * cannot be created here, as it depends on the chardev
  * already existing.
  */
-static bool object_create_initial(const char *type)
+static bool object_create_initial(const char *type, QemuOpts *opts)
 {
+    ObjectClass *klass;
+
+    if (is_help_option(type)) {
+        GSList *l, *list;
+
+        printf("List of user creatable objects:\n");
+        list = object_class_get_list_sorted(TYPE_USER_CREATABLE, false);
+        for (l = list; l != NULL; l = l->next) {
+            ObjectClass *oc = OBJECT_CLASS(l->data);
+            printf("%s\n", object_class_get_name(oc));
+        }
+        g_slist_free(list);
+        exit(0);
+    }
+
+    klass = object_class_by_name(type);
+    if (klass && qemu_opt_has_help_opt(opts)) {
+        ObjectPropertyIterator iter;
+        ObjectProperty *prop;
+        GPtrArray *array = g_ptr_array_new();
+        int i;
+
+        object_class_property_iter_init(&iter, klass);
+        while ((prop = object_property_iter_next(&iter))) {
+            GString *str;
+
+            if (!prop->set) {
+                continue;
+            }
+
+            str = g_string_new(NULL);
+            g_string_append_printf(str, "%s.%s=%s", type,
+                                   prop->name, prop->type);
+            if (prop->description) {
+                g_string_append_printf(str, " - %s", prop->description);
+            }
+            g_ptr_array_add(array, g_string_free(str, false));
+        }
+        g_ptr_array_sort(array, (GCompareFunc)qemu_pstrcmp0);
+        for (i = 0; i < array->len; i++) {
+            printf("%s\n", (char *)array->pdata[i]);
+        }
+        g_ptr_array_set_free_func(array, g_free);
+        g_ptr_array_free(array, true);
+        exit(0);
+    }
+
     if (g_str_equal(type, "rng-egd") ||
         g_str_has_prefix(type, "pr-manager-")) {
         return false;
@@ -2777,9 +2791,9 @@ static bool object_create_initial(const char *type)
  * The remainder of object creation happens after the
  * creation of chardev, fsdev, net clients and device data types.
  */
-static bool object_create_delayed(const char *type)
+static bool object_create_delayed(const char *type, QemuOpts *opts)
 {
-    return !object_create_initial(type);
+    return !object_create_initial(type, opts);
 }
 
 
@@ -2927,7 +2941,6 @@ int main(int argc, char **argv, char **envp)
     const char *vga_model = NULL;
     const char *qtest_chrdev = NULL;
     const char *qtest_log = NULL;
-    const char *pid_file = NULL;
     const char *incoming = NULL;
     bool userconfig = true;
     bool nographic = false;
@@ -3029,7 +3042,6 @@ int main(int argc, char **argv, char **envp)
 
             popt = lookup_opt(argc, argv, &optarg, &optind);
             switch (popt->index) {
-            case QEMU_OPTION_nodefconfig:
             case QEMU_OPTION_nouserconfig:
                 userconfig = false;
                 break;
@@ -3210,24 +3222,6 @@ int main(int argc, char **argv, char **envp)
                 }
                 break;
 #endif
-#ifdef CONFIG_SLIRP
-            case QEMU_OPTION_tftp:
-                error_report("The -tftp option is deprecated. "
-                             "Please use '-netdev user,tftp=...' instead.");
-                legacy_tftp_prefix = optarg;
-                break;
-            case QEMU_OPTION_bootp:
-                error_report("The -bootp option is deprecated. "
-                             "Please use '-netdev user,bootfile=...' instead.");
-                legacy_bootp_filename = optarg;
-                break;
-            case QEMU_OPTION_redir:
-                error_report("The -redir option is deprecated. "
-                             "Please use '-netdev user,hostfwd=...' instead.");
-                if (net_slirp_redir(optarg) < 0)
-                    exit(1);
-                break;
-#endif
             case QEMU_OPTION_bt:
                 add_device_config(DEV_BT, optarg);
                 break;
@@ -3299,11 +3293,6 @@ int main(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_k:
                 keyboard_layout = optarg;
-                break;
-            case QEMU_OPTION_localtime:
-                rtc_utc = 0;
-                warn_report("This option is deprecated, "
-                            "use '-rtc base=localtime' instead.");
                 break;
             case QEMU_OPTION_vga:
                 vga_model = optarg;
@@ -3557,18 +3546,6 @@ int main(int argc, char **argv, char **envp)
             case QEMU_OPTION_win2k_hack:
                 win2k_install_hack = 1;
                 break;
-            case QEMU_OPTION_rtc_td_hack: {
-                static GlobalProperty slew_lost_ticks = {
-                    .driver   = "mc146818rtc",
-                    .property = "lost_tick_policy",
-                    .value    = "slew",
-                };
-
-                qdev_prop_register_global(&slew_lost_ticks);
-                warn_report("This option is deprecated, "
-                            "use '-rtc driftfix=slew' instead.");
-                break;
-            }
             case QEMU_OPTION_acpitable:
                 opts = qemu_opts_parse_noisily(qemu_find_opts("acpi"),
                                                optarg, true);
@@ -3659,12 +3636,6 @@ int main(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_no_hpet:
                 no_hpet = 1;
-                break;
-            case QEMU_OPTION_balloon:
-                if (balloon_parse(optarg) < 0) {
-                    error_report("unknown -balloon argument %s", optarg);
-                    exit(1);
-                }
                 break;
             case QEMU_OPTION_no_reboot:
                 no_reboot = 1;
@@ -3759,10 +3730,6 @@ int main(int argc, char **argv, char **envp)
                  * backward compatibility.
                  */
                 warn_report("This option is ignored and will be removed soon");
-                break;
-            case QEMU_OPTION_startdate:
-                warn_report("This option is deprecated, use '-rtc base=' instead.");
-                configure_rtc_date_offset(optarg, 1);
                 break;
             case QEMU_OPTION_rtc:
                 opts = qemu_opts_parse_noisily(qemu_find_opts("rtc"), optarg,
@@ -3963,7 +3930,6 @@ int main(int argc, char **argv, char **envp)
             case QEMU_OPTION_enable_sync_profile:
                 qsp_enable();
                 break;
-            case QEMU_OPTION_nodefconfig:
             case QEMU_OPTION_nouserconfig:
                 /* Nothing to be parsed here. Especially, do not error out below. */
                 break;
@@ -3996,10 +3962,13 @@ int main(int argc, char **argv, char **envp)
     os_daemonize();
     rcu_disable_atfork();
 
-    if (pid_file && qemu_create_pidfile(pid_file) != 0) {
-        error_report("could not acquire pid file: %s", strerror(errno));
+    if (pid_file && !qemu_write_pidfile(pid_file, &err)) {
+        error_reportf_err(err, "cannot create PID file: ");
         exit(1);
     }
+
+    qemu_unlink_pidfile_notifier.notify = qemu_unlink_pidfile;
+    qemu_add_exit_notifier(&qemu_unlink_pidfile_notifier);
 
     if (qemu_init_main_loop(&main_loop_err)) {
         error_report_err(main_loop_err);
@@ -4007,8 +3976,8 @@ int main(int argc, char **argv, char **envp)
     }
 
 #ifdef CONFIG_SECCOMP
-    if (qemu_opts_foreach(qemu_find_opts("sandbox"),
-                          parse_sandbox, NULL, NULL)) {
+    olist = qemu_find_opts_err("sandbox", NULL);
+    if (olist && qemu_opts_foreach(olist, parse_sandbox, NULL, NULL)) {
         exit(1);
     }
 #endif
@@ -4613,14 +4582,16 @@ int main(int argc, char **argv, char **envp)
     replay_checkpoint(CHECKPOINT_RESET);
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
     register_global_state();
-    if (replay_mode != REPLAY_MODE_NONE) {
-        replay_vmstate_init();
-    } else if (loadvm) {
+    if (loadvm) {
         Error *local_err = NULL;
         if (load_snapshot(loadvm, &local_err) < 0) {
             error_report_err(local_err);
             autostart = 0;
+            exit(1);
         }
+    }
+    if (replay_mode != REPLAY_MODE_NONE) {
+        replay_vmstate_init();
     }
 
     qdev_prop_check_globals();

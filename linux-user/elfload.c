@@ -710,6 +710,7 @@ enum {
     QEMU_PPC_FEATURE2_HAS_EBB = 0x10000000, /* Event Base Branching */
     QEMU_PPC_FEATURE2_HAS_ISEL = 0x08000000, /* Integer Select */
     QEMU_PPC_FEATURE2_HAS_TAR = 0x04000000, /* Target Address Register */
+    QEMU_PPC_FEATURE2_ARCH_3_00 = 0x00800000, /* ISA 3.00 */
 };
 
 #define ELF_HWCAP get_elf_hwcap()
@@ -764,6 +765,7 @@ static uint32_t get_elf_hwcap2(void)
     GET_FEATURE2(PPC2_BCTAR_ISA207, QEMU_PPC_FEATURE2_HAS_TAR);
     GET_FEATURE2((PPC2_BCTAR_ISA207 | PPC2_LSQ_ISA207 | PPC2_ALTIVEC_207 |
                   PPC2_ISA207S), QEMU_PPC_FEATURE2_ARCH_2_07);
+    GET_FEATURE2(PPC2_ISA300, QEMU_PPC_FEATURE2_ARCH_3_00);
 
 #undef GET_FEATURE
 #undef GET_FEATURE2
@@ -1437,7 +1439,10 @@ struct exec
 #define QMAGIC 0314
 
 /* Necessary parameters */
-#define TARGET_ELF_EXEC_PAGESIZE TARGET_PAGE_SIZE
+#define TARGET_ELF_EXEC_PAGESIZE \
+        (((eppnt->p_align & ~qemu_host_page_mask) != 0) ? \
+         TARGET_PAGE_SIZE : MAX(qemu_host_page_size, TARGET_PAGE_SIZE))
+#define TARGET_ELF_PAGELENGTH(_v) ROUND_UP((_v), TARGET_ELF_EXEC_PAGESIZE)
 #define TARGET_ELF_PAGESTART(_v) ((_v) & \
                                  ~(abi_ulong)(TARGET_ELF_EXEC_PAGESIZE-1))
 #define TARGET_ELF_PAGEOFFSET(_v) ((_v) & (TARGET_ELF_EXEC_PAGESIZE-1))
@@ -2279,7 +2284,7 @@ static void load_elf_image(const char *image_name, int image_fd,
     for (i = 0; i < ehdr->e_phnum; i++) {
         struct elf_phdr *eppnt = phdr + i;
         if (eppnt->p_type == PT_LOAD) {
-            abi_ulong vaddr, vaddr_po, vaddr_ps, vaddr_ef, vaddr_em;
+            abi_ulong vaddr, vaddr_po, vaddr_ps, vaddr_ef, vaddr_em, vaddr_len;
             int elf_prot = 0;
 
             if (eppnt->p_flags & PF_R) elf_prot =  PROT_READ;
@@ -2289,8 +2294,9 @@ static void load_elf_image(const char *image_name, int image_fd,
             vaddr = load_bias + eppnt->p_vaddr;
             vaddr_po = TARGET_ELF_PAGEOFFSET(vaddr);
             vaddr_ps = TARGET_ELF_PAGESTART(vaddr);
+            vaddr_len = TARGET_ELF_PAGELENGTH(eppnt->p_filesz + vaddr_po);
 
-            error = target_mmap(vaddr_ps, eppnt->p_filesz + vaddr_po,
+            error = target_mmap(vaddr_ps, vaddr_len,
                                 elf_prot, MAP_PRIVATE | MAP_FIXED,
                                 image_fd, eppnt->p_offset - vaddr_po);
             if (error == -1) {
