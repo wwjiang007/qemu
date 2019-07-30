@@ -43,15 +43,13 @@ add a new unit test:
 
 3. Add the test to ``tests/Makefile.include``. First, name the unit test
    program and add it to ``$(check-unit-y)``; then add a rule to build the
-   executable. Optionally, you can add a magical variable to support ``gcov``.
-   For example:
+   executable.  For example:
 
 .. code::
 
   check-unit-y += tests/foo-test$(EXESUF)
   tests/foo-test$(EXESUF): tests/foo-test.o $(test-util-obj-y)
   ...
-  gcov-files-foo-test-y = util/foo.c
 
 Since unit tests don't require environment variables, the simplest way to debug
 a unit test failure is often directly invoking it or even running it under
@@ -61,6 +59,7 @@ variable (which affects memory reclamation and catches invalid pointers better)
 and gtester options. If necessary, you can run
 
 .. code::
+
   make check-unit V=1
 
 and copy the actual command line which executes the unit test, then run
@@ -118,6 +117,7 @@ and using gdb on the test is still simple to do: find out the actual command
 from the output of
 
 .. code::
+
   make check-qtest V=1
 
 which you can run manually.
@@ -301,7 +301,7 @@ An alternative method to set up permissions is by adding the current user to
 .. code::
 
   $ sudo groupadd docker
-  $ sudo usermod $USER -G docker
+  $ sudo usermod $USER -a -G docker
   $ sudo chown :docker /var/run/docker.sock
 
 Note that any one of above configurations makes it possible for the user to
@@ -327,7 +327,7 @@ Images
 ------
 
 Along with many other images, the ``min-glib`` image is defined in a Dockerfile
-in ``tests/docker/dockefiles/``, called ``min-glib.docker``. ``make docker``
+in ``tests/docker/dockerfiles/``, called ``min-glib.docker``. ``make docker``
 command will list all the available images.
 
 To add a new image, simply create a new ``.docker`` file under the
@@ -399,12 +399,12 @@ VM testing
 
 This test suite contains scripts that bootstrap various guest images that have
 necessary packages to build QEMU. The basic usage is documented in ``Makefile``
-help which is displayed with ``make vm-test``.
+help which is displayed with ``make vm-help``.
 
 Quickstart
 ----------
 
-Run ``make vm-test`` to list available make targets. Invoke a specific make
+Run ``make vm-help`` to list available make targets. Invoke a specific make
 command to run build test in an image. For example, ``make vm-build-freebsd``
 will build the source tree in the FreeBSD image. The command can be executed
 from either the source tree or the build dir; if the former, ``./configure`` is
@@ -545,10 +545,39 @@ Tests based on ``avocado_qemu.Test`` can easily:
    - http://avocado-framework.readthedocs.io/en/latest/api/test/avocado.html#avocado.Test
    - http://avocado-framework.readthedocs.io/en/latest/api/utils/avocado.utils.html
 
-Installation
-------------
+Running tests
+-------------
 
-To install Avocado and its dependencies, run:
+You can run the acceptance tests simply by executing:
+
+.. code::
+
+  make check-acceptance
+
+This involves the automatic creation of Python virtual environment
+within the build tree (at ``tests/venv``) which will have all the
+right dependencies, and will save tests results also within the
+build tree (at ``tests/results``).
+
+Note: the build environment must be using a Python 3 stack, and have
+the ``venv`` and ``pip`` packages installed.  If necessary, make sure
+``configure`` is called with ``--python=`` and that those modules are
+available.  On Debian and Ubuntu based systems, depending on the
+specific version, they may be on packages named ``python3-venv`` and
+``python3-pip``.
+
+The scripts installed inside the virtual environment may be used
+without an "activation".  For instance, the Avocado test runner
+may be invoked by running:
+
+ .. code::
+
+  tests/venv/bin/avocado run $OPTION1 $OPTION2 tests/acceptance/
+
+Manual Installation
+-------------------
+
+To manually install Avocado and its dependencies, run:
 
 .. code::
 
@@ -561,8 +590,9 @@ Alternatively, follow the instructions on this link:
 Overview
 --------
 
-This directory provides the ``avocado_qemu`` Python module, containing
-the ``avocado_qemu.Test`` class.  Here's a simple usage example:
+The ``tests/acceptance/avocado_qemu`` directory provides the
+``avocado_qemu`` Python module, containing the ``avocado_qemu.Test``
+class.  Here's a simple usage example:
 
 .. code::
 
@@ -571,7 +601,6 @@ the ``avocado_qemu.Test`` class.  Here's a simple usage example:
 
   class Version(Test):
       """
-      :avocado: enable
       :avocado: tags=quick
       """
       def test_qmp_human_info_version(self):
@@ -605,7 +634,46 @@ instance, available at ``self.vm``.  Because many tests will tweak the
 QEMU command line, launching the QEMUMachine (by using ``self.vm.launch()``)
 is left to the test writer.
 
-At test "tear down", ``avocado_qemu.Test`` handles the QEMUMachine
+The base test class has also support for tests with more than one
+QEMUMachine. The way to get machines is through the ``self.get_vm()``
+method which will return a QEMUMachine instance. The ``self.get_vm()``
+method accepts arguments that will be passed to the QEMUMachine creation
+and also an optional `name` attribute so you can identify a specific
+machine and get it more than once through the tests methods. A simple
+and hypothetical example follows:
+
+.. code::
+
+  from avocado_qemu import Test
+
+
+  class MultipleMachines(Test):
+      """
+      :avocado: enable
+      """
+      def test_multiple_machines(self):
+          first_machine = self.get_vm()
+          second_machine = self.get_vm()
+          self.get_vm(name='third_machine').launch()
+
+          first_machine.launch()
+          second_machine.launch()
+
+          first_res = first_machine.command(
+              'human-monitor-command',
+              command_line='info version')
+
+          second_res = second_machine.command(
+              'human-monitor-command',
+              command_line='info version')
+
+          third_res = self.get_vm(name='third_machine').command(
+              'human-monitor-command',
+              command_line='info version')
+
+          self.assertEquals(first_res, second_res, third_res)
+
+At test "tear down", ``avocado_qemu.Test`` handles all the QEMUMachines
 shutdown.
 
 QEMUMachine
@@ -659,6 +727,23 @@ vm
 A QEMUMachine instance, initially configured according to the given
 ``qemu_bin`` parameter.
 
+arch
+~~~~
+
+The architecture can be used on different levels of the stack, e.g. by
+the framework or by the test itself.  At the framework level, it will
+currently influence the selection of a QEMU binary (when one is not
+explicitly given).
+
+Tests are also free to use this attribute value, for their own needs.
+A test may, for instance, use the same value when selecting the
+architecture of a kernel or disk image to boot a VM with.
+
+The ``arch`` attribute will be set to the test parameter of the same
+name.  If one is not given explicitly, it will either be set to
+``None``, or, if the test is tagged with one (and only one)
+``:avocado: tags=arch:VALUE`` tag, it will be set to ``VALUE``.
+
 qemu_bin
 ~~~~~~~~
 
@@ -681,6 +766,19 @@ like the following:
 
   PARAMS (key=qemu_bin, path=*, default=x86_64-softmmu/qemu-system-x86_64) => 'x86_64-softmmu/qemu-system-x86_64
 
+arch
+~~~~
+
+The architecture that will influence the selection of a QEMU binary
+(when one is not explicitly given).
+
+Tests are also free to use this parameter value, for their own needs.
+A test may, for instance, use the same value when selecting the
+architecture of a kernel or disk image to boot a VM with.
+
+This parameter has a direct relation with the ``arch`` attribute.  If
+not given, it will default to None.
+
 qemu_bin
 ~~~~~~~~
 
@@ -689,11 +787,15 @@ The exact QEMU binary to be used on QEMUMachine.
 Uninstalling Avocado
 --------------------
 
-If you've followed the installation instructions above, you can easily
-uninstall Avocado.  Start by listing the packages you have installed::
+If you've followed the manual installation instructions above, you can
+easily uninstall Avocado.  Start by listing the packages you have
+installed::
 
   pip list --user
 
 And remove any package you want with::
 
   pip uninstall <package_name>
+
+If you've used ``make check-acceptance``, the Python virtual environment where
+Avocado is installed will be cleaned up as part of ``make check-clean``.

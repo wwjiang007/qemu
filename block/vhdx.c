@@ -156,7 +156,7 @@ uint32_t vhdx_update_checksum(uint8_t *buf, size_t size, int crc_offset)
 
     memset(buf + crc_offset, 0, sizeof(crc));
     crc =  crc32c(0xffffffff, buf, size);
-    cpu_to_le32s(&crc);
+    crc = cpu_to_le32(crc);
     memcpy(buf + crc_offset, &crc, sizeof(crc));
 
     return crc;
@@ -753,8 +753,8 @@ static int vhdx_parse_metadata(BlockDriverState *bs, BDRVVHDXState *s)
         goto exit;
     }
 
-    le32_to_cpus(&s->params.block_size);
-    le32_to_cpus(&s->params.data_bits);
+    s->params.block_size = le32_to_cpu(s->params.block_size);
+    s->params.data_bits = le32_to_cpu(s->params.data_bits);
 
 
     /* We now have the file parameters, so we can tell if this is a
@@ -803,9 +803,9 @@ static int vhdx_parse_metadata(BlockDriverState *bs, BDRVVHDXState *s)
         goto exit;
     }
 
-    le64_to_cpus(&s->virtual_disk_size);
-    le32_to_cpus(&s->logical_sector_size);
-    le32_to_cpus(&s->physical_sector_size);
+    s->virtual_disk_size = le64_to_cpu(s->virtual_disk_size);
+    s->logical_sector_size = le32_to_cpu(s->logical_sector_size);
+    s->physical_sector_size = le32_to_cpu(s->physical_sector_size);
 
     if (s->params.block_size < VHDX_BLOCK_SIZE_MIN ||
         s->params.block_size > VHDX_BLOCK_SIZE_MAX) {
@@ -985,7 +985,7 @@ static int vhdx_open(BlockDriverState *bs, QDict *options, int flags,
     /* endian convert, and verify populated BAT field file offsets against
      * region table and log entries */
     for (i = 0; i < s->bat_entries; i++) {
-        le64_to_cpus(&s->bat[i]);
+        s->bat[i] = le64_to_cpu(s->bat[i]);
         if (payblocks--) {
             /* payload bat entries */
             if ((s->bat[i] & VHDX_BAT_STATE_BIT_MASK) ==
@@ -1175,7 +1175,7 @@ static int vhdx_allocate_block(BlockDriverState *bs, BDRVVHDXState *s,
     *new_offset = current_len;
 
     /* per the spec, the address for a block is in units of 1MB */
-    *new_offset = ROUND_UP(*new_offset, 1024 * 1024);
+    *new_offset = ROUND_UP(*new_offset, 1 * MiB);
     if (*new_offset > INT64_MAX) {
         return -EINVAL;
     }
@@ -1338,7 +1338,7 @@ static coroutine_fn int vhdx_co_writev(BlockDriverState *bs, int64_t sector_num,
             case PAYLOAD_BLOCK_FULLY_PRESENT:
                 /* if the file offset address is in the header zone,
                  * there is a problem */
-                if (sinfo.file_offset < (1024 * 1024)) {
+                if (sinfo.file_offset < (1 * MiB)) {
                     ret = -EFAULT;
                     goto error_bat_restore;
                 }
@@ -1509,7 +1509,7 @@ static int vhdx_create_new_metadata(BlockBackend *blk,
     mt_file_params->block_size = cpu_to_le32(block_size);
     if (type == VHDX_TYPE_FIXED) {
         mt_file_params->data_bits |= VHDX_PARAMS_LEAVE_BLOCKS_ALLOCED;
-        cpu_to_le32s(&mt_file_params->data_bits);
+        mt_file_params->data_bits = cpu_to_le32(mt_file_params->data_bits);
     }
 
     vhdx_guid_generate(&mt_page83->page_83_data);
@@ -1656,7 +1656,7 @@ static int vhdx_create_bat(BlockBackend *blk, BDRVVHDXState *s,
             sinfo.file_offset = ROUND_UP(sinfo.file_offset, MiB);
             vhdx_update_bat_table_entry(blk_bs(blk), s, &sinfo, &unused, &unused,
                                         block_state);
-            cpu_to_le64s(&s->bat[sinfo.bat_idx]);
+            s->bat[sinfo.bat_idx] = cpu_to_le64(s->bat[sinfo.bat_idx]);
             sector_num += s->sectors_per_block;
         }
         ret = blk_pwrite(blk, file_offset, s->bat, length, 0);
@@ -1889,7 +1889,8 @@ static int coroutine_fn vhdx_co_create(BlockdevCreateOptions *opts,
         return -EINVAL;
     }
     if (block_size > VHDX_BLOCK_SIZE_MAX) {
-        error_setg(errp, "Block size must not exceed %d", VHDX_BLOCK_SIZE_MAX);
+        error_setg(errp, "Block size must not exceed %" PRId64,
+                   VHDX_BLOCK_SIZE_MAX);
         return -EINVAL;
     }
 
@@ -1899,7 +1900,8 @@ static int coroutine_fn vhdx_co_create(BlockdevCreateOptions *opts,
         return -EIO;
     }
 
-    blk = blk_new(BLK_PERM_WRITE | BLK_PERM_RESIZE, BLK_PERM_ALL);
+    blk = blk_new(bdrv_get_aio_context(bs),
+                  BLK_PERM_WRITE | BLK_PERM_RESIZE, BLK_PERM_ALL);
     ret = blk_insert_bs(blk, bs, errp);
     if (ret < 0) {
         goto delete_and_exit;

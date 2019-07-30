@@ -79,6 +79,9 @@ this code that are retained.
  * version 2 or later. See the COPYING file in the top-level directory.
  */
 
+#ifndef FPU_SOFTFLOAT_MACROS_H
+#define FPU_SOFTFLOAT_MACROS_H
+
 /*----------------------------------------------------------------------------
 | Shifts `a' right by the number of bits given in `count'.  If any nonzero
 | bits are shifted off, they are ``jammed'' into the least significant bit of
@@ -641,14 +644,14 @@ static inline uint64_t udiv_qrnnd(uint64_t *r, uint64_t n1,
     uint64_t q;
     asm("divq %4" : "=a"(q), "=d"(*r) : "0"(n0), "1"(n1), "rm"(d));
     return q;
-#elif defined(__s390x__)
+#elif defined(__s390x__) && !defined(__clang__)
     /* Need to use a TImode type to get an even register pair for DLGR.  */
     unsigned __int128 n = (unsigned __int128)n1 << 64 | n0;
     asm("dlgr %0, %1" : "+r"(n) : "r"(d));
     *r = n >> 64;
     return n;
-#elif defined(_ARCH_PPC64)
-    /* From Power ISA 3.0B, programming note for divdeu.  */
+#elif defined(_ARCH_PPC64) && defined(_ARCH_PWR7)
+    /* From Power ISA 2.06, programming note for divdeu.  */
     uint64_t q1, q2, Q, r1, r2, R;
     asm("divdeu %0,%2,%4; divdu %1,%3,%4"
         : "=&r"(q1), "=r"(q2)
@@ -796,3 +799,5 @@ static inline flag ne128( uint64_t a0, uint64_t a1, uint64_t b0, uint64_t b1 )
     return ( a0 != b0 ) || ( a1 != b1 );
 
 }
+
+#endif

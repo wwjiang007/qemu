@@ -13,6 +13,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/vfio/vfio-calxeda-xgmac.h"
+#include "qemu/module.h"
 
 static void calxeda_xgmac_realize(DeviceState *dev, Error **errp)
 {
@@ -20,12 +21,13 @@ static void calxeda_xgmac_realize(DeviceState *dev, Error **errp)
     VFIOCalxedaXgmacDeviceClass *k = VFIO_CALXEDA_XGMAC_DEVICE_GET_CLASS(dev);
 
     vdev->compat = g_strdup("calxeda,hb-xgmac");
+    vdev->num_compat = 1;
 
     k->parent_realize(dev, errp);
 }
 
 static const VMStateDescription vfio_platform_calxeda_xgmac_vmstate = {
-    .name = TYPE_VFIO_CALXEDA_XGMAC,
+    .name = "vfio-calxeda-xgmac",
     .unmigratable = 1,
 };
 

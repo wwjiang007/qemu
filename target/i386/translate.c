@@ -1268,10 +1268,30 @@ static void gen_helper_fp_arith_STN_ST0(int op, int opreg)
     }
 }
 
+static void gen_exception(DisasContext *s, int trapno, target_ulong cur_eip)
+{
+    gen_update_cc_op(s);
+    gen_jmp_im(s, cur_eip);
+    gen_helper_raise_exception(cpu_env, tcg_const_i32(trapno));
+    s->base.is_jmp = DISAS_NORETURN;
+}
+
+/* Generate #UD for the current instruction.  The assumption here is that
+   the instruction is known, but it isn't allowed in the current cpu mode.  */
+static void gen_illegal_opcode(DisasContext *s)
+{
+    gen_exception(s, EXCP06_ILLOP, s->pc_start - s->cs_base);
+}
+
 /* if d == OR_TMP0, it means memory operand (address in A0) */
 static void gen_op(DisasContext *s1, int op, TCGMemOp ot, int d)
 {
     if (d != OR_TMP0) {
+        if (s1->prefix & PREFIX_LOCK) {
+            /* Lock prefix when destination is not memory.  */
+            gen_illegal_opcode(s1);
+            return;
+        }
         gen_op_mov_v_reg(s1, ot, s1->T0, d);
     } else if (!(s1->prefix & PREFIX_LOCK)) {
         gen_op_ld_v(s1, ot, s1->T0, s1->A0);
@@ -1378,6 +1398,11 @@ static void gen_op(DisasContext *s1, int op, TCGMemOp ot, int d)
 static void gen_inc(DisasContext *s1, TCGMemOp ot, int d, int c)
 {
     if (s1->prefix & PREFIX_LOCK) {
+        if (d != OR_TMP0) {
+            /* Lock prefix when destination is not memory */
+            gen_illegal_opcode(s1);
+            return;
+        }
         tcg_gen_movi_tl(s1->T0, c > 0 ? 1 : -1);
         tcg_gen_atomic_add_fetch_tl(s1->T0, s1->A0, s1->T0,
                                     s1->mem_index, ot | MO_LE);
@@ -2469,21 +2494,6 @@ static void gen_leave(DisasContext *s)
     gen_op_mov_reg_v(s, a_ot, R_ESP, s->T1);
 }
 
-static void gen_exception(DisasContext *s, int trapno, target_ulong cur_eip)
-{
-    gen_update_cc_op(s);
-    gen_jmp_im(s, cur_eip);
-    gen_helper_raise_exception(cpu_env, tcg_const_i32(trapno));
-    s->base.is_jmp = DISAS_NORETURN;
-}
-
-/* Generate #UD for the current instruction.  The assumption here is that
-   the instruction is known, but it isn't allowed in the current cpu mode.  */
-static void gen_illegal_opcode(DisasContext *s)
-{
-    gen_exception(s, EXCP06_ILLOP, s->pc_start - s->cs_base);
-}
-
 /* Similarly, except that the assumption here is that we don't decode
    the instruction at all -- either a missing opcode, an unimplemented
    feature, or just a bogus instruction stream.  */
@@ -3440,7 +3450,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
         case 0x172:
         case 0x173:
             if (b1 >= 2) {
-	        goto unknown_op;
+                goto unknown_op;
             }
             val = x86_ldub_code(env, s);
             if (is_xmm) {
@@ -5322,31 +5332,63 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     case 0x1c7: /* cmpxchg8b */
         modrm = x86_ldub_code(env, s);
         mod = (modrm >> 6) & 3;
-        if ((mod == 3) || ((modrm & 0x38) != 0x8))
-            goto illegal_op;
-#ifdef TARGET_X86_64
-        if (dflag == MO_64) {
-            if (!(s->cpuid_ext_features & CPUID_EXT_CX16))
+        switch ((modrm >> 3) & 7) {
+        case 1: /* CMPXCHG8, CMPXCHG16 */
+            if (mod == 3) {
                 goto illegal_op;
-            gen_lea_modrm(env, s, modrm);
-            if ((s->prefix & PREFIX_LOCK) && (tb_cflags(s->base.tb) & CF_PARALLEL)) {
-                gen_helper_cmpxchg16b(cpu_env, s->A0);
-            } else {
-                gen_helper_cmpxchg16b_unlocked(cpu_env, s->A0);
             }
-        } else
+#ifdef TARGET_X86_64
+            if (dflag == MO_64) {
+                if (!(s->cpuid_ext_features & CPUID_EXT_CX16)) {
+                    goto illegal_op;
+                }
+                gen_lea_modrm(env, s, modrm);
+                if ((s->prefix & PREFIX_LOCK) &&
+                    (tb_cflags(s->base.tb) & CF_PARALLEL)) {
+                    gen_helper_cmpxchg16b(cpu_env, s->A0);
+                } else {
+                    gen_helper_cmpxchg16b_unlocked(cpu_env, s->A0);
+                }
+                set_cc_op(s, CC_OP_EFLAGS);
+                break;
+            }
 #endif        
-        {
-            if (!(s->cpuid_features & CPUID_CX8))
+            if (!(s->cpuid_features & CPUID_CX8)) {
                 goto illegal_op;
+            }
             gen_lea_modrm(env, s, modrm);
-            if ((s->prefix & PREFIX_LOCK) && (tb_cflags(s->base.tb) & CF_PARALLEL)) {
+            if ((s->prefix & PREFIX_LOCK) &&
+                (tb_cflags(s->base.tb) & CF_PARALLEL)) {
                 gen_helper_cmpxchg8b(cpu_env, s->A0);
             } else {
                 gen_helper_cmpxchg8b_unlocked(cpu_env, s->A0);
             }
+            set_cc_op(s, CC_OP_EFLAGS);
+            break;
+
+        case 7: /* RDSEED */
+        case 6: /* RDRAND */
+            if (mod != 3 ||
+                (s->prefix & (PREFIX_LOCK | PREFIX_REPZ | PREFIX_REPNZ)) ||
+                !(s->cpuid_ext_features & CPUID_EXT_RDRAND)) {
+                goto illegal_op;
+            }
+            if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
+                gen_io_start();
+            }
+            gen_helper_rdrand(s->T0, cpu_env);
+            rm = (modrm & 7) | REX_B(s);
+            gen_op_mov_reg_v(s, dflag, rm, s->T0);
+            set_cc_op(s, CC_OP_EFLAGS);
+            if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
+                gen_io_end();
+                gen_jmp(s, s->pc - s->cs_base);
+            }
+            break;
+
+        default:
+            goto illegal_op;
         }
-        set_cc_op(s, CC_OP_EFLAGS);
         break;
 
         /**************************/
@@ -6395,7 +6437,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                      SVM_IOIO_TYPE_MASK | svm_is_rep(prefixes));
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_io_start();
-	}
+        }
         tcg_gen_movi_i32(s->tmp2_i32, val);
         gen_helper_in_func(ot, s->T1, s->tmp2_i32);
         gen_op_mov_reg_v(s, ot, R_EAX, s->T1);
@@ -6416,7 +6458,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_io_start();
-	}
+        }
         tcg_gen_movi_i32(s->tmp2_i32, val);
         tcg_gen_trunc_tl_i32(s->tmp3_i32, s->T1);
         gen_helper_out_func(ot, s->tmp2_i32, s->tmp3_i32);
@@ -6434,7 +6476,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                      SVM_IOIO_TYPE_MASK | svm_is_rep(prefixes));
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_io_start();
-	}
+        }
         tcg_gen_trunc_tl_i32(s->tmp2_i32, s->T0);
         gen_helper_in_func(ot, s->T1, s->tmp2_i32);
         gen_op_mov_reg_v(s, ot, R_EAX, s->T1);
@@ -6454,7 +6496,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_io_start();
-	}
+        }
         tcg_gen_trunc_tl_i32(s->tmp2_i32, s->T0);
         tcg_gen_trunc_tl_i32(s->tmp3_i32, s->T1);
         gen_helper_out_func(ot, s->tmp2_i32, s->tmp3_i32);
@@ -7028,13 +7070,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 #ifdef WANT_ICEBP
     case 0xf1: /* icebp (undocumented, exits to external debugger) */
         gen_svm_check_intercept(s, pc_start, SVM_EXIT_ICEBP);
-#if 1
         gen_debug(s, pc_start - s->cs_base);
-#else
-        /* start debug */
-        tb_flush(CPU(x86_env_get_cpu(env)));
-        qemu_set_log(CPU_LOG_INT | CPU_LOG_TB_IN_ASM);
-#endif
         break;
 #endif
     case 0xfa: /* cli */
@@ -7167,7 +7203,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_jmp_im(s, pc_start - s->cs_base);
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_io_start();
-	}
+        }
         gen_helper_rdtsc(cpu_env);
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_io_end();
@@ -8586,11 +8622,11 @@ static const TranslatorOps i386_tr_ops = {
 };
 
 /* generate intermediate code for basic block 'tb'.  */
-void gen_intermediate_code(CPUState *cpu, TranslationBlock *tb)
+void gen_intermediate_code(CPUState *cpu, TranslationBlock *tb, int max_insns)
 {
     DisasContext dc;
 
-    translator_loop(&i386_tr_ops, &dc.base, cpu, tb);
+    translator_loop(&i386_tr_ops, &dc.base, cpu, tb, max_insns);
 }
 
 void restore_state_to_opc(CPUX86State *env, TranslationBlock *tb,

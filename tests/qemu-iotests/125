@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test preallocated growth of qcow2 images
 #
@@ -24,7 +24,6 @@ owner=mreitz@redhat.com
 seq=$(basename $0)
 echo "QA output created by $seq"
 
-here=$PWD
 status=1	# failure is the default!
 
 _cleanup()
@@ -45,7 +44,6 @@ get_image_size_on_host()
 
 _supported_fmt qcow2
 _supported_proto file
-_supported_os Linux
 
 if [ -z "$TEST_IMG_FILE" ]; then
     TEST_IMG_FILE=$TEST_IMG

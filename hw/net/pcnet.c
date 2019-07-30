@@ -36,6 +36,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "hw/qdev.h"
 #include "net/net.h"
 #include "net/eth.h"
@@ -988,14 +989,14 @@ ssize_t pcnet_receive(NetClientState *nc, const uint8_t *buf, size_t size_)
     uint8_t buf1[60];
     int remaining;
     int crc_err = 0;
-    int size = size_;
+    size_t size = size_;
 
     if (CSR_DRX(s) || CSR_STOP(s) || CSR_SPND(s) || !size ||
         (CSR_LOOP(s) && !s->looptest)) {
         return -1;
     }
 #ifdef PCNET_DEBUG
-    printf("pcnet_receive size=%d\n", size);
+    printf("pcnet_receive size=%zu\n", size);
 #endif
 
     /* if too small buffer, then expand it */
@@ -1501,7 +1502,8 @@ static void pcnet_bcr_writew(PCNetState *s, uint32_t rap, uint32_t val)
             val |= 0x0300;
             break;
         default:
-            printf("Bad SWSTYLE=0x%02x\n", val & 0xff);
+            qemu_log_mask(LOG_GUEST_ERROR, "pcnet: Bad SWSTYLE=0x%02x\n",
+                          val & 0xff);
             val = 0x0200;
             break;
         }

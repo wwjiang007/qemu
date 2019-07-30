@@ -1,7 +1,6 @@
 #ifndef HW_QXL_H
 #define HW_QXL_H
 
-#include "qemu-common.h"
 
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
@@ -34,6 +33,7 @@ typedef struct PCIQXLDevice {
     PortioList         vga_port_list;
     SimpleSpiceDisplay ssd;
     int                id;
+    bool               have_vga;
     uint32_t           debug;
     uint32_t           guestdebug;
     uint32_t           cmdlog;

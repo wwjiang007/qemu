@@ -31,6 +31,7 @@
 #include "hw/audio/soundhw.h"
 #include "audio/audio.h"
 #include "hw/pci/pci.h"
+#include "qemu/module.h"
 #include "sysemu/dma.h"
 
 /* Missing stuff:
@@ -414,14 +415,14 @@ static void es1370_update_voices (ES1370State *s, uint32_t ctl, uint32_t sctl)
                     i,
                     new_freq,
                     1 << (new_fmt & 1),
-                    (new_fmt & 2) ? AUD_FMT_S16 : AUD_FMT_U8,
+                    (new_fmt & 2) ? AUDIO_FORMAT_S16 : AUDIO_FORMAT_U8,
                     d->shift);
             if (new_freq) {
                 struct audsettings as;
 
                 as.freq = new_freq;
                 as.nchannels = 1 << (new_fmt & 1);
-                as.fmt = (new_fmt & 2) ? AUD_FMT_S16 : AUD_FMT_U8;
+                as.fmt = (new_fmt & 2) ? AUDIO_FORMAT_S16 : AUDIO_FORMAT_U8;
                 as.endianness = 0;
 
                 if (i == ADC_CHANNEL) {
@@ -585,10 +586,13 @@ static uint64_t es1370_read(void *opaque, hwaddr addr, unsigned size)
 #endif
         break;
 
+    case ES1370_REG_ADC_FRAMECNT:
+        d += 2;
+        goto framecnt;
     case ES1370_REG_DAC1_FRAMECNT:
     case ES1370_REG_DAC2_FRAMECNT:
-    case ES1370_REG_ADC_FRAMECNT:
         d += (addr - ES1370_REG_DAC1_FRAMECNT) >> 3;
+    framecnt:
         val = d->frame_cnt;
 #ifdef DEBUG_ES1370
         {
@@ -602,10 +606,13 @@ static uint64_t es1370_read(void *opaque, hwaddr addr, unsigned size)
 #endif
         break;
 
+    case ES1370_REG_ADC_FRAMEADR:
+        d += 2;
+        goto frameadr;
     case ES1370_REG_DAC1_FRAMEADR:
     case ES1370_REG_DAC2_FRAMEADR:
-    case ES1370_REG_ADC_FRAMEADR:
         d += (addr - ES1370_REG_DAC1_FRAMEADR) >> 3;
+    frameadr:
         val = d->frame_addr;
         break;
 

@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -18,7 +18,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "hw/hw.h"
 #include "hw/boards.h"
@@ -49,7 +48,8 @@ static const VMStateDescription vmstate_cpu_tlb = {
     }
 };
 
-static int get_sr(QEMUFile *f, void *opaque, size_t size, VMStateField *field)
+static int get_sr(QEMUFile *f, void *opaque, size_t size,
+                  const VMStateField *field)
 {
     CPUOpenRISCState *env = opaque;
     cpu_set_sr(env, qemu_get_be32(f));
@@ -57,7 +57,7 @@ static int get_sr(QEMUFile *f, void *opaque, size_t size, VMStateField *field)
 }
 
 static int put_sr(QEMUFile *f, void *opaque, size_t size,
-                  VMStateField *field, QJSON *vmdesc)
+                  const VMStateField *field, QJSON *vmdesc)
 {
     CPUOpenRISCState *env = opaque;
     qemu_put_be32(f, cpu_get_sr(env));

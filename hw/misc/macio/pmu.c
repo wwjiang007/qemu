@@ -29,6 +29,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "hw/hw.h"
 #include "hw/ppc/mac.h"
 #include "hw/input/adb.h"
@@ -39,6 +40,7 @@
 #include "sysemu/sysemu.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 
@@ -686,6 +688,7 @@ static const VMStateDescription vmstate_pmu_adb = {
         VMSTATE_TIMER_PTR(adb_poll_timer, PMUState),
         VMSTATE_UINT8(adb_reply_size, PMUState),
         VMSTATE_BUFFER(adb_reply, PMUState),
+        VMSTATE_END_OF_LIST()
     }
 };
 
