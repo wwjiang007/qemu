@@ -28,11 +28,11 @@
 #include "monitor/hmp-target.h"
 #include "monitor/hmp.h"
 #include "qapi/qmp/qdict.h"
-#include "hw/i386/pc.h"
 #include "sysemu/kvm.h"
 #include "sysemu/sev.h"
 #include "qapi/error.h"
 #include "sev_i386.h"
+#include "qapi/qapi-commands-misc-target.h"
 #include "qapi/qapi-commands-misc.h"
 
 /* Perform linear address sign extension */
@@ -726,13 +726,5 @@ SevLaunchMeasureInfo *qmp_query_sev_launch_measure(Error **errp)
 
 SevCapability *qmp_query_sev_capabilities(Error **errp)
 {
-    SevCapability *data;
-
-    data = sev_get_capabilities();
-    if (!data) {
-        error_setg(errp, "SEV feature is not available");
-        return NULL;
-    }
-
-    return data;
+    return sev_get_capabilities(errp);
 }

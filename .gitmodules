@@ -10,9 +10,6 @@
 [submodule "roms/openbios"]
 	path = roms/openbios
 	url = https://git.qemu.org/git/openbios.git
-[submodule "roms/openhackware"]
-	path = roms/openhackware
-	url = https://git.qemu.org/git/openhackware.git
 [submodule "roms/qemu-palcode"]
 	path = roms/qemu-palcode
 	url = https://git.qemu.org/git/qemu-palcode.git
@@ -58,3 +55,12 @@
 [submodule "roms/opensbi"]
 	path = roms/opensbi
 	url = 	https://git.qemu.org/git/opensbi.git
+[submodule "roms/qboot"]
+	path = roms/qboot
+	url = https://git.qemu.org/git/qboot.git
+[submodule "meson"]
+	path = meson
+	url = https://git.qemu.org/git/meson.git
+[submodule "roms/vbootrom"]
+	path = roms/vbootrom
+	url = https://git.qemu.org/git/vbootrom.git

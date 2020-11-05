@@ -1,4 +1,3 @@
-from __future__ import print_function
 #
 # Migration test main engine
 #
@@ -287,7 +286,7 @@ class Engine(object):
             cmdline = "'" + cmdline + "'"
 
         argv = [
-            "-machine", "accel=kvm",
+            "-accel", "kvm",
             "-cpu", "host",
             "-kernel", self._kernel,
             "-initrd", self._initrd,

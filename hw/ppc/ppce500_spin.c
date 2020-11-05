@@ -33,8 +33,8 @@
 #include "hw/hw.h"
 #include "hw/sysbus.h"
 #include "sysemu/hw_accel.h"
-#include "sysemu/sysemu.h"
 #include "e500.h"
+#include "qom/object.h"
 
 #define MAX_CPUS 32
 
@@ -47,14 +47,14 @@ typedef struct spin_info {
 } QEMU_PACKED SpinInfo;
 
 #define TYPE_E500_SPIN "e500-spin"
-#define E500_SPIN(obj) OBJECT_CHECK(SpinState, (obj), TYPE_E500_SPIN)
+OBJECT_DECLARE_SIMPLE_TYPE(SpinState, E500_SPIN)
 
-typedef struct SpinState {
+struct SpinState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
     SpinInfo spin[MAX_CPUS];
-} SpinState;
+};
 
 static void spin_reset(DeviceState *dev)
 {

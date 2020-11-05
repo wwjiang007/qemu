@@ -22,7 +22,6 @@
 
 #include "qemu/notify.h"
 #include "exec/memory.h"
-#include "hw/irq.h"
 #include "hw/acpi/acpi_dev_interface.h"
 
 /*
@@ -182,7 +181,6 @@ void acpi_send_gpe_event(ACPIREGS *ar, qemu_irq irq,
 void acpi_update_sci(ACPIREGS *acpi_regs, qemu_irq irq);
 
 /* acpi.c */
-extern int acpi_enabled;
 extern char unsigned *acpi_tables;
 extern size_t acpi_tables_len;
 

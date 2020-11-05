@@ -24,7 +24,7 @@
 #include "exec/cpu_ldst.h"
 #include "qemu/int128.h"
 #include "qemu/atomic128.h"
-#include "tcg.h"
+#include "tcg/tcg.h"
 
 void helper_cmpxchg8b_unlocked(CPUX86State *env, target_ulong a0)
 {
@@ -68,7 +68,7 @@ void helper_cmpxchg8b(CPUX86State *env, target_ulong a0)
         uint64_t *haddr = g2h(a0);
         cmpv = cpu_to_le64(cmpv);
         newv = cpu_to_le64(newv);
-        oldv = atomic_cmpxchg__nocheck(haddr, cmpv, newv);
+        oldv = qatomic_cmpxchg__nocheck(haddr, cmpv, newv);
         oldv = le64_to_cpu(oldv);
     }
 #else

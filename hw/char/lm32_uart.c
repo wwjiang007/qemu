@@ -23,12 +23,15 @@
 
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "trace.h"
 #include "chardev/char-fe.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
+#include "qom/object.h"
 
 enum {
     R_RXTX = 0,
@@ -92,7 +95,7 @@ enum {
 };
 
 #define TYPE_LM32_UART "lm32-uart"
-#define LM32_UART(obj) OBJECT_CHECK(LM32UartState, (obj), TYPE_LM32_UART)
+OBJECT_DECLARE_SIMPLE_TYPE(LM32UartState, LM32_UART)
 
 struct LM32UartState {
     SysBusDevice parent_obj;
@@ -103,7 +106,6 @@ struct LM32UartState {
 
     uint32_t regs[R_MAX];
 };
-typedef struct LM32UartState LM32UartState;
 
 static void uart_update_irq(LM32UartState *s)
 {
@@ -233,7 +235,7 @@ static int uart_can_rx(void *opaque)
     return !(s->regs[R_LSR] & LSR_DR);
 }
 
-static void uart_event(void *opaque, int event)
+static void uart_event(void *opaque, QEMUChrEvent event)
 {
 }
 
@@ -291,7 +293,7 @@ static void lm32_uart_class_init(ObjectClass *klass, void *data)
 
     dc->reset = uart_reset;
     dc->vmsd = &vmstate_lm32_uart;
-    dc->props = lm32_uart_properties;
+    device_class_set_props(dc, lm32_uart_properties);
     dc->realize = lm32_uart_realize;
 }
 
